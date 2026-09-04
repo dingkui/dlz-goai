@@ -16,8 +16,9 @@
 | `provider/ollama` | Ollama 原生接口（含用量统计） | `internal/wire` |
 | `agent` | 工具调用循环：步骤上限、超时、截断、审批、事件流、并行执行 | `message` `tool` |
 | `mcp` | **MCP Tool Client / Adapter**（stdio + Streamable HTTP） | 无 |
+| `runtime` | 持久化运行：状态登记、事件落库、步级检查点、断点续跑、回放与订阅 | `agent` `message` `tool` |
 
-依赖严格单向：`llm` 不 import 任何 provider（接口与实现解耦，自定义实现零牵连）；`agent` 只认 `tool.Tool` 接口；`mcp` 可单独使用。
+依赖严格单向：`llm` 不 import 任何 provider（接口与实现解耦，自定义实现零牵连）；`agent` 只认 `tool.Tool` 接口；`mcp` 可单独使用；`runtime` 依赖 `agent`，不反向依赖任何应用。
 
 > MCP 定位说明：本库实现 `initialize / tools/list / tools/call`，
 > 定位是 **MCP Tool Client / Adapter**（把 MCP 工具接入 agent），
@@ -83,10 +84,39 @@ agent.Config{Tools: tools, ToolExecution: agent.ToolParallel}
 
 ## 路线图
 
-- [x] 第一阶段：`message` `tool` `llm` `provider` `factory` `agent` `mcp`（当前）
-- [ ] `runtime` — 持久化运行（Run/EventStore/CheckpointStore/Resume/Replay/审批状态持久化）
+- [x] 第一阶段：`message` `tool` `llm` `provider` `factory` `agent` `mcp`
+- [x] `runtime` — 持久化运行：状态机、EventStore、CheckpointStore、Resume、Replay、Subscribe、审批持久化、进程恢复
 - [ ] `rag` + `embedding` + `retrieval` + `storage` — 检索增强（可独立使用，可包装成 tool）
 - [ ] `compose` — 等真实应用产生编排需求后再评估（Graph / Workflow）
+
+## runtime 用法
+
+当一次运行需要跨进程可恢复时，用 `runtime` 包装 `agent.Runner`：存储全部走接口注入，自带内存实现，SQLite 等持久实现由调用方提供。
+
+```go
+rt := runtime.New(runtime.Options{
+    Runs:        memory.NewRunStore(),
+    Events:      memory.NewEventStore(),
+    Checkpoints: memory.NewCheckpointStore(),
+})
+
+runID := rt.BeginRun()
+// 运行期间：状态自动登记（pending→running→succeeded）、事件落库、每步存检查点
+result, err := rt.Run(ctx, initial, opts, agent.Config{RunID: runID, Tools: tools}, model, nil)
+
+// 进程重启后：恢复非终态运行、从检查点续跑
+rt.Recover(ctx)
+result, err = rt.Resume(ctx, runID, agent.Config{Tools: tools}, model, nil)
+
+// 回放某次运行的全部事件
+events, _ := rt.Replay(ctx, runID)
+
+// 订阅进行中运行的事件（UI 广播）
+ch, cancel := rt.Subscribe(runID)
+defer cancel()
+```
+
+关键边界：**工具集是运行时对象、不可序列化**，所以 Resume 时工具由调用方重新提供——检查点保存"发生了什么"，不保存"能做什么"。
 
 ## License
 

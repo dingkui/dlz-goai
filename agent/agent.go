@@ -82,6 +82,10 @@ type Config struct {
 	// Parallel 时同一响应中的多个工具调用并发执行，结果仍按调用顺序写回
 	// （协议要求 tool 消息与调用一一对应），仅事件顺序不保证。
 	ToolExecution ToolExecution
+	// OnStep 每步结束（模型调用与全部工具执行完）后调用，
+	// 传入当前完整消息轨迹。持久化运行时用它做检查点；
+	// 与 Transform 一样是可选钩子，不设置时行为不变。
+	OnStep func(step int, messages []message.Message)
 	// Transform 每轮调用模型前对上下文做裁剪或改写的可选钩子。
 	// 长对话截断、历史压缩都挂在这里。
 	Transform func(messages []message.Message) []message.Message
@@ -271,6 +275,9 @@ func (r *Runner) Run(ctx context.Context, initial []message.Message, opts *messa
 				messages = append(messages, out.toolMessage)
 				citations = mergeCitations(citations, out.citations)
 			}
+		}
+		if cfg.OnStep != nil {
+			cfg.OnStep(step, messages)
 		}
 		emit.Emit(Event{Type: EventStepDone, RunID: cfg.RunID, Step: step})
 	}
