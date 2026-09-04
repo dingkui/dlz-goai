@@ -185,7 +185,7 @@ func TestRuntimeOnSQLite(t *testing.T) {
 		t.Fatalf("登记不符: %+v", rec)
 	}
 	evs, _ := rt.Replay(context.Background(), runID)
-	if len(evs) == 0 || evs[len(evs)-1].Type != agent.EventFinal {
+	if len(evs) == 0 || evs[len(evs)-1].Type != agent.EventRunDone {
 		t.Fatalf("事件回放不符: %d 条", len(evs))
 	}
 }

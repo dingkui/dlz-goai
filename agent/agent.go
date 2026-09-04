@@ -27,8 +27,8 @@ const (
 	MaxStepsLimit = 20
 )
 
-
-// ErrNoTools 本次运行没有可用工具，继续跑没有意义。
+// ErrNoTools 保留用于兼容旧调用方。Runner 现在允许空工具集，
+// 此时退化为一次普通流式模型调用并仍产生统一事件。
 var ErrNoTools = errors.New("agent: 当前运行没有可用工具")
 
 // ErrNoModel 未提供模型调用函数。
@@ -65,7 +65,8 @@ type ModelFunc func(ctx context.Context, messages []message.Message, opts *messa
 
 // Config 定义一次运行的工具集与安全边界。
 type Config struct {
-	// Tools 本次运行允许模型调用的工具。必填，为空直接报错。
+	// Tools 本次运行允许模型调用的工具。为空时执行普通单轮模型调用，
+	// 便于普通对话与 Agent 共用 Runtime、事件和重连协议。
 	Tools []tool.Tool
 	// Policies 按工具名覆盖策略。未列出的工具按是否声明只读决定。
 	Policies map[string]tool.Policy
@@ -134,16 +135,17 @@ func (r *Runner) Run(ctx context.Context, initial []message.Message, opts *messa
 		registry[name] = t
 		definitions = append(definitions, t.Definition())
 	}
-	if len(registry) == 0 {
-		return Result{}, ErrNoTools
-	}
-
 	runOpts := message.Options{}
 	if opts != nil {
 		runOpts = *opts
 	}
-	runOpts.Tools = definitions
-	runOpts.ToolChoice = "auto"
+	if len(definitions) > 0 {
+		runOpts.Tools = definitions
+		runOpts.ToolChoice = "auto"
+	} else {
+		runOpts.Tools = nil
+		runOpts.ToolChoice = ""
+	}
 
 	maxSteps := cfg.MaxSteps
 	if maxSteps <= 0 || maxSteps > MaxStepsLimit {
@@ -422,12 +424,17 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 // errOutcome 构造错误回执：原因写进 tool 消息交回模型，让模型有机会自我纠正。
 func (r *Runner) errOutcome(ctx context.Context, call tool.Call, reason string,
 	step int, cfg Config, emit Emitter) callOutcome {
+	arguments, _ := call.ParseArguments()
+	emit.Emit(Event{
+		Type: EventToolError, RunID: cfg.RunID, Step: step,
+		CallID: call.ID, ToolName: call.Function.Name,
+		Arguments: arguments, Error: reason,
+	})
 	return callOutcome{toolMessage: message.Message{
 		Role: message.RoleTool, ToolCallID: call.ID, ToolName: call.Function.Name,
 		Content: "错误：" + reason,
 	}}
 }
-
 
 // policyFor 判定工具的生效策略：显式配置优先，否则看工具是否自我声明为只读。
 // 未声明只读的工具默认需要确认。

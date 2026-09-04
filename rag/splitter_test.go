@@ -48,6 +48,24 @@ func TestTextSplitterLongBody(t *testing.T) {
 	}
 }
 
+func TestTextSplitterDoesNotSkipAfterNewlineBoundary(t *testing.T) {
+	body := strings.Repeat("甲", 60) + "\n" + strings.Repeat("乙", 35) + strings.Repeat("丙", 70)
+	chunks := TextSplitter{ChunkSize: 100}.Split(body)
+	if len(chunks) < 2 {
+		t.Fatalf("应在换行附近切成多块: %+v", chunks)
+	}
+	var joined strings.Builder
+	for _, chunk := range chunks {
+		joined.WriteString(chunk.Content)
+	}
+	compact := func(value string) string {
+		return strings.NewReplacer("\n", "", "\r", "", " ", "", "\t", "").Replace(value)
+	}
+	if compact(joined.String()) != compact(body) {
+		t.Fatalf("分块后正文有跳字\nwant=%q\n got=%q", compact(body), compact(joined.String()))
+	}
+}
+
 func TestTextSplitterEmpty(t *testing.T) {
 	if got := (TextSplitter{}).Split(""); got != nil {
 		t.Fatalf("空文本应返回 nil, got %+v", got)

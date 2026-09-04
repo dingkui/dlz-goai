@@ -6,12 +6,13 @@ import (
 )
 
 // Pipeline 一条完整的向量检索管线：query → embed → search → rerank。
-// Embedder 必填；Reranker 可选；Store 与 FullTextStore 至少一个。
+// 使用向量 Store 时 Embedder 必填；纯全文检索不需要 Embedder；
+// Reranker 可选；Store 与 FullTextStore 至少一个。
 type Pipeline struct {
-	Embedder   Embedder
-	Store      VectorStore
-	FullText   FullTextStore // 可选：开启混合检索时使用
-	Reranker   Reranker       // 可选
+	Embedder Embedder
+	Store    VectorStore
+	FullText FullTextStore // 可选：开启混合检索时使用
+	Reranker Reranker      // 可选
 	// DefaultTopK RetrieveOptions.TopK 为 0 时的默认值。
 	DefaultTopK int
 }
@@ -20,11 +21,11 @@ var _ Retriever = Pipeline{}
 
 // Retrieve 实现 Retriever。
 func (p Pipeline) Retrieve(ctx context.Context, query string, opts RetrieveOptions) ([]SearchResult, error) {
-	if p.Embedder == nil {
-		return nil, fmt.Errorf("rag: pipeline 未配置 Embedder")
-	}
 	if p.Store == nil && p.FullText == nil {
 		return nil, fmt.Errorf("rag: pipeline 未配置任何 Store")
+	}
+	if p.Store != nil && p.Embedder == nil {
+		return nil, fmt.Errorf("rag: 向量检索未配置 Embedder")
 	}
 	topK := opts.TopK
 	if topK <= 0 {

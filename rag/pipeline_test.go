@@ -12,6 +12,25 @@ import (
 // stubEmbedder 返回与输入文本绑定的确定性向量，便于测试控制相似度。
 type stubEmbedder struct{}
 
+type stubFullTextStore struct {
+	hits []rag.SearchResult
+}
+
+func (s stubFullTextStore) Index(context.Context, string, []rag.Chunk) error { return nil }
+func (s stubFullTextStore) Remove(context.Context, string) error             { return nil }
+func (s stubFullTextStore) Search(_ context.Context, _ string, topK int, filter rag.Filter) ([]rag.SearchResult, error) {
+	var hits []rag.SearchResult
+	for _, hit := range s.hits {
+		if filter == nil || filter(hit.Chunk) {
+			hits = append(hits, hit)
+		}
+		if len(hits) == topK {
+			break
+		}
+	}
+	return hits, nil
+}
+
 func (stubEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
 	return textVec(text), nil
 }
@@ -69,6 +88,18 @@ func TestPipelineEndToEnd(t *testing.T) {
 	}
 	if hits[0].Chunk.Section != "Go" {
 		t.Fatalf("最相关应为 Go 块, got %+v", hits[0])
+	}
+}
+
+func TestPipelineFullTextOnlyDoesNotRequireEmbedder(t *testing.T) {
+	want := rag.SearchResult{Chunk: rag.Chunk{DocID: "d1", Content: "全文检索命中"}, Score: 1}
+	pipe := rag.Pipeline{FullText: stubFullTextStore{hits: []rag.SearchResult{want}}}
+	hits, err := pipe.Retrieve(context.Background(), "检索", rag.RetrieveOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Chunk.DocID != want.Chunk.DocID {
+		t.Fatalf("纯 FTS Pipeline 返回不符: %+v", hits)
 	}
 }
 

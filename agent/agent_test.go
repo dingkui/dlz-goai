@@ -168,10 +168,11 @@ func TestRunPolicyDeny(t *testing.T) {
 		Tools:    []tool.Tool{stubTool()},
 		Policies: map[string]tool.Policy{"stub_tool": tool.PolicyDeny},
 	}
+	var events []Event
 	result, err := New().Run(
 		context.Background(),
 		[]message.Message{{Role: message.RoleUser, Content: "问"}},
-		nil, cfg, model, nil,
+		nil, cfg, model, func(event Event) { events = append(events, event) },
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -179,6 +180,16 @@ func TestRunPolicyDeny(t *testing.T) {
 	toolMsg := result.Messages[2]
 	if toolMsg.Role != message.RoleTool || !strings.Contains(toolMsg.Content, "禁止") {
 		t.Fatalf("应收到策略禁止回执: %+v", toolMsg)
+	}
+	var found bool
+	for _, event := range events {
+		if event.Type == EventToolError && event.CallID == "c1" &&
+			event.ToolName == "stub_tool" && strings.Contains(event.Error, "禁止") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("策略拒绝必须发出 tool_error: %+v", events)
 	}
 }
 

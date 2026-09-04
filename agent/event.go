@@ -25,24 +25,33 @@ const (
 	EventStepDone = "step_done"
 	// EventFinal 运行结束，Content 为最终回答。
 	EventFinal = "final"
+	// EventRunDone Runtime 已完成状态与事件持久化。
+	EventRunDone = "run_done"
+	// EventRunError Runtime 运行失败；Error 为失败原因。
+	EventRunError = "run_error"
 )
 
 // Event 是 Runner 向调用方发出的结构化运行事件。
 type Event struct {
-	Type      string          `json:"type"`
-	RunID     string          `json:"runId,omitempty"`
-	Step      int             `json:"step,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	CallID    string          `json:"callId,omitempty"`
-	ToolName  string          `json:"toolName,omitempty"`
-	SourceID   string              `json:"sourceId,omitempty"`
-	SourceName string              `json:"sourceName,omitempty"`
-	Arguments map[string]any  `json:"arguments,omitempty"`
-	Result    string          `json:"result,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	Approved  *bool           `json:"approved,omitempty"`
-	Citations []tool.Citation `json:"citations,omitempty"`
-	Finish    string          `json:"finish,omitempty"`
+	Type         string          `json:"type"`
+	Seq          int64           `json:"seq,omitempty"`
+	RunID        string          `json:"runId,omitempty"`
+	Step         int             `json:"step,omitempty"`
+	Content      string          `json:"content,omitempty"`
+	CallID       string          `json:"callId,omitempty"`
+	ToolName     string          `json:"toolName,omitempty"`
+	SourceID     string          `json:"sourceId,omitempty"`
+	SourceName   string          `json:"sourceName,omitempty"`
+	Arguments    map[string]any  `json:"arguments,omitempty"`
+	Result       string          `json:"result,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	Approved     *bool           `json:"approved,omitempty"`
+	Citations    []tool.Citation `json:"citations,omitempty"`
+	Finish       string          `json:"finish,omitempty"`
+	PromptTokens int             `json:"promptTokens,omitempty"`
+	EvalTokens   int             `json:"evalTokens,omitempty"`
+	EvalMs       int64           `json:"evalMs,omitempty"`
+	TotalMs      int64           `json:"totalMs,omitempty"`
 }
 
 // Emitter 运行事件的接收端。为 nil 时 Runner 静默丢弃事件。

@@ -89,6 +89,16 @@ func (b *Broker) Begin() string {
 	}
 }
 
+// Bind 确保指定运行已登记。Runtime 用它支持调用方自定义的 RunID，
+// 以及进程内失败后使用同一 RunID 续跑；重复绑定是幂等的。
+func (b *Broker) Bind(runID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, exists := b.runs[runID]; !exists {
+		b.runs[runID] = map[string]chan bool{}
+	}
+}
+
 // End 结束运行，并把仍在等待的调用全部按拒绝处理——
 // 悬空的 goroutine 是这类设计最容易泄漏的地方。
 func (b *Broker) End(runID string) {

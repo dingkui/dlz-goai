@@ -45,11 +45,15 @@ var ErrNoCheckpoint = errors.New("runtime: 检查点不存在")
 // ErrRunNotFound 指定运行不存在。
 var ErrRunNotFound = errors.New("runtime: 运行不存在")
 
-// ErrRunTerminal 运行已处于终态，无法继续。
+// ErrRunTerminal 运行已成功结束，不能再次发起或续跑。
 var ErrRunTerminal = errors.New("runtime: 运行已结束")
 
+// ErrRunActive 运行仍处于 pending/running/waiting_approval，不能重复发起或续跑。
+var ErrRunActive = errors.New("runtime: 运行仍在进行")
+
 // PendingApproval 等待审批的调用信息（WaitingApproval 状态时有值）。
-// 进程重启后调用方可据此重建审批界面，用户决策后 Resume。
+// 进程重启后调用方可据此重建“中断前曾等待审批”的界面；原等待器
+// 已随进程消失，不能直接 Approve，需由用户确认后通过 Resume 重新执行。
 type PendingApproval struct {
 	CallID     string         `json:"callId"`
 	ToolName   string         `json:"toolName"`

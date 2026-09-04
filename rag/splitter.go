@@ -104,7 +104,7 @@ func splitLongBody(body string, size int) []string {
 		return []string{body}
 	}
 	var parts []string
-	for i := 0; i < len(runes); i += size {
+	for i := 0; i < len(runes); {
 		end := i + size
 		if end > len(runes) {
 			end = len(runes)
@@ -116,6 +116,9 @@ func splitLongBody(body string, size int) []string {
 			}
 		}
 		parts = append(parts, strings.TrimSpace(string(runes[i:end])))
+		// end 可能因优先在换行处分割而小于 i+size；下一块必须从
+		// 实际切点继续，否则固定步长会跳过 end 到 i+size 之间的正文。
+		i = end
 	}
 	return parts
 }

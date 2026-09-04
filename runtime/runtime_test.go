@@ -231,7 +231,8 @@ func TestRuntimeRecover(t *testing.T) {
 		t.Fatalf("应恢复 2 条, got %d err=%v", n, err)
 	}
 	rec, _ := runs.Get(ctx, "r2")
-	if rec.Status != runtime.StatusFailed || rec.PendingApproval != nil || !strings.Contains(rec.Error, "恢复") {
+	if rec.Status != runtime.StatusFailed || rec.PendingApproval == nil ||
+		rec.PendingApproval.CallID != "c1" || !strings.Contains(rec.Error, "恢复") {
 		t.Fatalf("恢复状态不符: %+v", rec)
 	}
 	ok, _ := runs.Get(ctx, "r3")
@@ -239,6 +240,155 @@ func TestRuntimeRecover(t *testing.T) {
 		t.Fatal("终态不应被恢复改写")
 	}
 	_ = rt
+}
+
+func TestRuntimeResumeStateSemantics(t *testing.T) {
+	runs := memory.NewRunStore()
+	checkpoints := memory.NewCheckpointStore()
+	events := memory.NewEventStore()
+	rt := runtime.New(runtime.Options{Runs: runs, Events: events, Checkpoints: checkpoints})
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		id     string
+		status runtime.Status
+		want   error
+	}{
+		{"pending", runtime.StatusPending, runtime.ErrRunActive},
+		{"running", runtime.StatusRunning, runtime.ErrRunActive},
+		{"waiting", runtime.StatusWaitingApproval, runtime.ErrRunActive},
+		{"done", runtime.StatusSucceeded, runtime.ErrRunTerminal},
+	} {
+		_ = runs.Create(ctx, runtime.RunRecord{ID: tc.id, Status: tc.status})
+		_ = checkpoints.Save(ctx, runtime.Checkpoint{RunID: tc.id, Messages: []message.Message{{Role: message.RoleUser, Content: "问"}}})
+		_, err := rt.Resume(ctx, tc.id, agent.Config{}, func(context.Context, []message.Message, *message.Options, func(message.Delta)) error { return nil }, nil)
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("%s: want %v, got %v", tc.id, tc.want, err)
+		}
+	}
+}
+
+func TestRuntimeRejectsReusingRunID(t *testing.T) {
+	rt := newTestRuntime()
+	runID := rt.BeginRun()
+	model := func(_ context.Context, _ []message.Message, _ *message.Options, emit func(message.Delta)) error {
+		emit(message.Delta{Content: "完成"})
+		return nil
+	}
+	if _, err := rt.Run(context.Background(), []message.Message{{Role: message.RoleUser, Content: "问"}}, nil,
+		agent.Config{RunID: runID}, model, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Run(context.Background(), []message.Message{{Role: message.RoleUser, Content: "再问"}}, nil,
+		agent.Config{RunID: runID}, model, nil); !errors.Is(err, runtime.ErrRunTerminal) {
+		t.Fatalf("重复 RunID 应被拒绝: %v", err)
+	}
+}
+
+func TestRuntimeResumeContinuesEventSequence(t *testing.T) {
+	runs := memory.NewRunStore()
+	checkpoints := memory.NewCheckpointStore()
+	events := memory.NewEventStore()
+	rt := runtime.New(runtime.Options{Runs: runs, Events: events, Checkpoints: checkpoints})
+	ctx := context.Background()
+	_ = runs.Create(ctx, runtime.RunRecord{ID: "resume-seq", Status: runtime.StatusFailed})
+	_ = checkpoints.Save(ctx, runtime.Checkpoint{RunID: "resume-seq", Messages: []message.Message{{Role: message.RoleUser, Content: "问"}}})
+	_ = events.Append(ctx, "resume-seq", agent.Event{Type: agent.EventRunStart, RunID: "resume-seq", Seq: 7})
+
+	_, err := rt.Resume(ctx, "resume-seq", agent.Config{}, func(_ context.Context, _ []message.Message, _ *message.Options, emit func(message.Delta)) error {
+		emit(message.Delta{Content: "完成"})
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, _ := rt.Replay(ctx, "resume-seq")
+	for i, event := range replayed[1:] {
+		if event.Seq != int64(8+i) {
+			t.Fatalf("续跑事件序号不连续: %+v", replayed)
+		}
+	}
+}
+
+func TestRuntimeStreamAfterResumeSkipsOldTerminal(t *testing.T) {
+	rt := newTestRuntime()
+	runID := rt.BeginRun()
+	step := 0
+	first := func(_ context.Context, _ []message.Message, _ *message.Options, emit func(message.Delta)) error {
+		step++
+		if step == 1 {
+			emit(message.Delta{ToolCalls: []tool.CallDelta{{Index: 0, ID: "c1", Name: "echo", Arguments: `{"q":"go"}`}}})
+			return nil
+		}
+		return errors.New("中断")
+	}
+	_, _ = rt.Run(context.Background(), []message.Message{{Role: message.RoleUser, Content: "问"}}, nil,
+		agent.Config{RunID: runID, Tools: []tool.Tool{echoTool()}}, first, nil)
+	_, err := rt.Resume(context.Background(), runID, agent.Config{Tools: []tool.Tool{echoTool()}},
+		func(_ context.Context, _ []message.Message, _ *message.Options, emit func(message.Delta)) error {
+			emit(message.Delta{Content: "恢复完成"})
+			return nil
+		}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamed []agent.Event
+	if err := rt.Stream(context.Background(), runID, 0, func(event agent.Event) { streamed = append(streamed, event) }); err != nil {
+		t.Fatal(err)
+	}
+	var done, failed int
+	for _, event := range streamed {
+		if event.Type == agent.EventRunDone {
+			done++
+		}
+		if event.Type == agent.EventRunError {
+			failed++
+		}
+	}
+	if done != 1 || failed != 0 {
+		t.Fatalf("续跑订阅不应被旧终态截断: %+v", streamed)
+	}
+}
+
+func TestRuntimeDefaultApprovalUsesBrokerForExplicitRunID(t *testing.T) {
+	rt := newTestRuntime()
+	runID := "caller-supplied-run-id"
+	unsafe := tool.NewFunc("write", "写操作", nil, false,
+		func(context.Context, map[string]any) (tool.Result, error) { return tool.Text("ok"), nil })
+	step := 0
+	model := func(_ context.Context, _ []message.Message, _ *message.Options, emit func(message.Delta)) error {
+		step++
+		if step == 1 {
+			emit(message.Delta{ToolCalls: []tool.CallDelta{{Index: 0, ID: "c1", Name: "write", Arguments: "{}"}}})
+		} else {
+			emit(message.Delta{Content: "完成"})
+		}
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := rt.Run(context.Background(), []message.Message{{Role: message.RoleUser, Content: "写"}}, nil,
+			agent.Config{RunID: runID, Tools: []tool.Tool{unsafe}}, model, nil)
+		done <- err
+	}()
+	deadline := time.After(2 * time.Second)
+	for {
+		rec, err := rt.Get(context.Background(), runID)
+		if err == nil && rec.Status == runtime.StatusWaitingApproval {
+			if err := rt.Approve(runID, "c1", true); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("运行未进入 waiting_approval")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }
 
 // 取消：进行中的运行被取消后状态为 canceled。

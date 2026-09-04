@@ -50,12 +50,30 @@ func (codec) EncodeMessages(messages []message.Message) []map[string]any {
 		// Ollama：图片走消息级 images 数组，文本仍是字符串
 		item["content"] = m.Content
 		if len(m.Images) > 0 {
-			item["images"] = m.Images
+			images := make([]string, len(m.Images))
+			for i, image := range m.Images {
+				images[i] = ollamaImagePayload(image)
+			}
+			item["images"] = images
 		}
 		wire.ApplyMessageToolFields(item, m, true)
 		out = append(out, item)
 	}
 	return out
+}
+
+// ollamaImagePayload 把浏览器常用的 Data URI 转成 Ollama 原生 API
+// 所需的纯 base64；已经是纯 base64（或其他调用方自定义值）时保持不变。
+func ollamaImagePayload(image string) string {
+	comma := strings.IndexByte(image, ',')
+	if comma < 0 {
+		return image
+	}
+	header := strings.ToLower(strings.TrimSpace(image[:comma]))
+	if strings.HasPrefix(header, "data:") && strings.HasSuffix(header, ";base64") {
+		return image[comma+1:]
+	}
+	return image
 }
 
 func (codec) ApplyOptions(body map[string]any, opts *message.Options) {

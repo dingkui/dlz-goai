@@ -74,14 +74,16 @@ func Open(path string) (*sql.DB, error) {
 			return nil, fmt.Errorf("sqlite: pragma 失败: %w", err)
 		}
 	}
-	if err := migrate(db); err != nil {
+	if err := Migrate(db); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return db, nil
 }
 
-func migrate(db *sql.DB) error {
+// Migrate 在调用方已有的 SQLite 连接上创建 RAG/Runtime 表。
+// 宿主应用可借此复用自己的主库，而无需额外打开数据库文件。
+func Migrate(db *sql.DB) error {
 	for _, stmt := range schema {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("sqlite: 迁移失败: %w", err)
