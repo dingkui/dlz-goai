@@ -20,8 +20,12 @@
 | `rag` | 检索增强：分块、Embedder/VectorStore/Retriever/Reranker 接口、RRF 融合、Pipeline、Retriever→Tool 适配 | `tool` |
 | `embedding/ollama` `embedding/openai` | 双厂商 Embedder 实现 | `rag` |
 | `storage/memory` | 内存 VectorStore（暴力余弦，开发/测试用） | `rag` |
+| `storage/sqlite` | SQLite 持久实现：rag.VectorStore + runtime 三 Store | `rag` `runtime` + sqlite |
 
 依赖严格单向：`llm` 不 import 任何 provider；`agent` 只认 `tool.Tool`；`mcp` 可单独使用；`runtime` 依赖 `agent`；`rag` 只依赖 `tool`（不依赖 agent，可独立用，也可经 `rag.NewTool` 包成工具接入 agent）。
+
+> **依赖策略**：除 `storage/sqlite`（modernc.org/sqlite，纯 Go 无 CGO）外，
+> 所有模块零第三方依赖。不 import storage/sqlite 就不会引入该依赖。
 
 > MCP 定位说明：本库实现 `initialize / tools/list / tools/call`，
 > 定位是 **MCP Tool Client / Adapter**（把 MCP 工具接入 agent），
@@ -90,8 +94,8 @@ agent.Config{Tools: tools, ToolExecution: agent.ToolParallel}
 - [x] 第一阶段：`message` `tool` `llm` `provider` `factory` `agent` `mcp`
 - [x] `runtime` — 持久化运行：状态机、EventStore、CheckpointStore、Resume、Replay、Subscribe、审批持久化、进程恢复
 - [x] `rag` + `embedding` + `storage` — 检索增强：分块、Embedder/VectorStore/Retriever/Reranker 接口、RRF 融合、Pipeline、Retriever→Tool 适配（可独立使用，可包装成 tool）
-- [ ] `retrieval/{vector,fulltext,hybrid}` + `rerank/{llm,score}` + `splitter/{text,markdown}` — 拆分检索策略与重排实现（当前策略在 rag 内，后续按需拆包）
-- [ ] `storage/sqlite` — SQLite 持久实现（VectorStore/FullTextStore/EventStore/CheckpointStore）
+- [ ] `retrieval/{vector,fulltext,hybrid}` + `rerank/{llm,score}` + `splitter/{text,markdown}` — 拆分检索策略与重排实现（当前策略在 rag 内，后续按需拆包）；FullTextStore 暂无实现（应用可接 SQLite FTS5）
+- [x] `storage/sqlite` — SQLite 持久实现（rag.VectorStore + runtime RunStore/EventStore/CheckpointStore，WAL 模式，同文件可多 Store 共享）
 - [ ] `compose` — 等真实应用产生编排需求后再评估（Graph / Workflow）
 
 ## runtime 用法
