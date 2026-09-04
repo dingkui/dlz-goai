@@ -66,6 +66,9 @@ func (codec) ApplyOptions(body map[string]any, opts *message.Options) {
 	if opts.NumCtx != nil {
 		options["num_ctx"] = *opts.NumCtx
 	}
+	if opts.MaxTokens > 0 {
+		options["num_predict"] = opts.MaxTokens
+	}
 	if len(options) > 0 {
 		body["options"] = options
 	}

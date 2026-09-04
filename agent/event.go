@@ -35,6 +35,8 @@ type Event struct {
 	Content   string          `json:"content,omitempty"`
 	CallID    string          `json:"callId,omitempty"`
 	ToolName  string          `json:"toolName,omitempty"`
+	SourceID   string              `json:"sourceId,omitempty"`
+	SourceName string              `json:"sourceName,omitempty"`
 	Arguments map[string]any  `json:"arguments,omitempty"`
 	Result    string          `json:"result,omitempty"`
 	Error     string          `json:"error,omitempty"`

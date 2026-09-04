@@ -38,6 +38,13 @@ type ReadOnlyTool interface {
 	IsReadOnly() bool
 }
 
+// Sourced 有出处的工具可选实现，用于在事件与审批请求中标注工具来源
+// （例如 MCP 服务 ID 与显示名）。未实现时来源字段为空。
+type Sourced interface {
+	SourceID() string
+	SourceName() string
+}
+
 // Registry 工具注册表：集中管理工具、策略与暴露给模型的定义列表。
 type Registry struct {
 	mu       sync.RWMutex

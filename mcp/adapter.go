@@ -22,8 +22,11 @@ type ToolCaller interface {
 	CallTool(ctx context.Context, fullName string, args map[string]any) (CallToolResult, error)
 }
 
-var _ tool.Tool = mcpTool{}
-var _ tool.ReadOnlyTool = mcpTool{}
+var (
+	_ tool.Tool          = mcpTool{}
+	_ tool.ReadOnlyTool  = mcpTool{}
+	_ tool.Sourced       = mcpTool{}
+)
 
 func (t mcpTool) Definition() tool.Definition {
 	return tool.Definition{
@@ -36,6 +39,10 @@ func (t mcpTool) Definition() tool.Definition {
 // IsReadOnly 透传服务端的 readOnlyHint 注解。
 // 未声明时按有副作用处理，由 agent 侧默认要求审批。
 func (t mcpTool) IsReadOnly() bool { return t.source.ReadOnly() }
+
+// SourceID/SourceName 事件与审批请求里的工具来源标注。
+func (t mcpTool) SourceID() string   { return t.source.ServerID }
+func (t mcpTool) SourceName() string { return t.source.ServerName }
 
 func (t mcpTool) Execute(ctx context.Context, args map[string]any) (tool.Result, error) {
 	result, err := t.caller.CallTool(ctx, t.fullName, args)

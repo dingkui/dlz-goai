@@ -19,10 +19,12 @@ var (
 
 // ApprovalRequest 描述一次需要确认的工具调用。
 type ApprovalRequest struct {
-	Step      int
-	CallID    string
-	ToolName  string
-	Arguments map[string]any
+	Step       int
+	CallID     string
+	ToolName   string
+	SourceID   string
+	SourceName string
+	Arguments  map[string]any
 }
 
 // ApprovalHandler 决定一个有副作用的工具调用能否执行。

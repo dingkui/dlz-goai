@@ -76,6 +76,9 @@ func (codec) ApplyOptions(body map[string]any, opts *message.Options) {
 	if opts.Temperature != nil {
 		body["temperature"] = *opts.Temperature
 	}
+	if opts.MaxTokens > 0 {
+		body["max_tokens"] = opts.MaxTokens
+	}
 }
 
 func (codec) DecodeModels(r io.Reader) ([]string, error) {

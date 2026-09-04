@@ -4,10 +4,17 @@ package tool
 //
 // 定义在 tool 包而非 message 包，是为了让 tool 保持零依赖：
 // message 需要引用工具调用，而 tool 需要携带引用，二者必须单向。
+// Citation 一次工具调用所依据的来源。同时覆盖互联网来源（URL）
+// 与本地知识库来源（DocID/RelPath/Section），字段按需填写。
 type Citation struct {
+	Kind    string `json:"kind,omitempty"` // 来源类别（如 web/mcp/doc），由调用方定义
+	DocID   int64  `json:"doc_id,omitempty"`
 	Title   string `json:"title"`
-	URL     string `json:"url"`
+	URL     string `json:"url,omitempty"`
+	RelPath string `json:"rel_path,omitempty"` // 本地文档相对路径
+	Section string `json:"section,omitempty"`  // 文档内章节锚点
 	Snippet string `json:"snippet,omitempty"`
+	Source  string `json:"source,omitempty"` // 来源显示名（如服务名）
 }
 
 // Result 一次工具执行的产出。

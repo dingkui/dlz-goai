@@ -51,6 +51,8 @@ type Options struct {
 	Temperature *float64
 	NumCtx      *int
 	System      string
-	Tools       []tool.Definition
-	ToolChoice  string
+	// MaxTokens 单次生成的 token 上限。0 表示交给服务端默认。
+	MaxTokens  int
+	Tools      []tool.Definition
+	ToolChoice string
 }

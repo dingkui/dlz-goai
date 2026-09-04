@@ -7,6 +7,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -26,8 +27,6 @@ const (
 	MaxStepsLimit = 20
 )
 
-// ErrMaxSteps 用尽步骤仍未收敛。
-var ErrMaxSteps = errors.New("agent: 已达到最大步骤数")
 
 // ErrNoTools 本次运行没有可用工具，继续跑没有意义。
 var ErrNoTools = errors.New("agent: 当前运行没有可用工具")
@@ -44,6 +43,19 @@ const (
 	// ToolParallel 并行执行。仅当一次模型响应包含多个工具调用时生效。
 	ToolParallel ToolExecution = "parallel"
 )
+
+// targetZero 取工具用于来源探测，未注册时返回 nil。
+func targetZero(registry map[string]tool.Tool, name string) tool.Tool {
+	return registry[name]
+}
+
+// toolSource 探测工具的可选来源标注（MCP 服务等）。
+func toolSource(t tool.Tool) (string, string) {
+	if s, ok := t.(tool.Sourced); ok {
+		return s.SourceID(), s.SourceName()
+	}
+	return "", ""
+}
 
 // ModelFunc 已绑定服务与模型的流式调用函数。
 //
@@ -263,12 +275,58 @@ func (r *Runner) Run(ctx context.Context, initial []message.Message, opts *messa
 		emit.Emit(Event{Type: EventStepDone, RunID: cfg.RunID, Step: step})
 	}
 
+	// 兜底总结：步数用尽后去掉工具再调一次模型，让运行以一段可读的
+	// 总结收尾而不是报错——已完成的工作不应因步数上限而变成错误。
+	finalOptions := runOpts
+	finalOptions.Tools = nil
+	finalOptions.ToolChoice = ""
+	var finalContent strings.Builder
+	var finalErr error
+	err := model(ctx, messages, &finalOptions, func(delta message.Delta) {
+		if delta.Error != "" && finalErr == nil {
+			finalErr = errors.New(delta.Error)
+		}
+		if delta.Content != "" {
+			finalContent.WriteString(delta.Content)
+			emit.Emit(Event{Type: EventModelDelta, RunID: cfg.RunID, Step: maxSteps + 1, Content: delta.Content})
+		}
+		if delta.PromptTokens > 0 {
+			usage.PromptTokens = delta.PromptTokens
+		}
+		if delta.EvalTokens > 0 {
+			usage.EvalTokens += delta.EvalTokens
+		}
+		if delta.EvalMs > 0 {
+			usage.EvalMs += delta.EvalMs
+		}
+		if delta.TotalMs > 0 {
+			usage.TotalMs += delta.TotalMs
+		}
+	})
+	if err == nil {
+		err = finalErr
+	}
+	if err != nil {
+		result := usage
+		result.Messages = messages
+		result.Steps = maxSteps
+		result.FinishReason = "max_steps"
+		result.Citations = citations
+		return result, err
+	}
+	summary := finalContent.String()
+	messages = append(messages, message.Message{
+		Role: message.RoleAssistant, Content: summary, Citations: citations,
+	})
+	emit.Emit(Event{Type: EventFinal, RunID: cfg.RunID, Step: maxSteps + 1,
+		Content: summary, Citations: citations, Finish: "max_steps"})
 	result := usage
+	result.Content = summary
 	result.Messages = messages
 	result.Steps = maxSteps
 	result.FinishReason = "max_steps"
 	result.Citations = citations
-	return result, ErrMaxSteps
+	return result, nil
 }
 
 // callOutcome 一次工具调用的产出。abort 非 nil 表示需要终止本次运行
@@ -287,6 +345,7 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 	maxResultBytes int, emit Emitter) callOutcome {
 
 	name := call.Function.Name
+	sourceID, sourceName := toolSource(targetZero(registry, name))
 	target, ok := registry[name]
 	if !ok {
 		return r.errOutcome(ctx, call, "模型请求了未授权或不存在的工具", step, cfg, emit)
@@ -296,18 +355,19 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 		return r.errOutcome(ctx, call, "工具参数不是合法 JSON: "+argErr.Error(), step, cfg, emit)
 	}
 	emit.Emit(Event{Type: EventToolProposed, RunID: cfg.RunID, Step: step,
-		CallID: call.ID, ToolName: name, Arguments: arguments})
+		CallID: call.ID, ToolName: name, SourceID: sourceID, SourceName: sourceName, Arguments: arguments})
 
 	switch cfg.policyFor(target) {
 	case tool.PolicyDeny:
 		return r.errOutcome(ctx, call, "工具被当前策略禁止", step, cfg, emit)
 	case tool.PolicyConfirm:
 		emit.Emit(Event{Type: EventApprovalRequired, RunID: cfg.RunID, Step: step,
-			CallID: call.ID, ToolName: name, Arguments: arguments})
+			CallID: call.ID, ToolName: name, SourceID: sourceID, SourceName: sourceName, Arguments: arguments})
 		approved := false
 		if cfg.Approve != nil {
 			decision, approvedErr := cfg.Approve.Request(ctx, ApprovalRequest{
-				Step: step, CallID: call.ID, ToolName: name, Arguments: arguments,
+				Step: step, CallID: call.ID, ToolName: name,
+				SourceID: sourceID, SourceName: sourceName, Arguments: arguments,
 			})
 			if approvedErr != nil {
 				out := r.errOutcome(ctx, call, "工具审批中断: "+approvedErr.Error(), step, cfg, emit)
@@ -325,7 +385,7 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 	}
 
 	emit.Emit(Event{Type: EventToolStarted, RunID: cfg.RunID, Step: step,
-		CallID: call.ID, ToolName: name, Arguments: arguments})
+		CallID: call.ID, ToolName: name, SourceID: sourceID, SourceName: sourceName, Arguments: arguments})
 	toolCtx, cancel := context.WithTimeout(ctx, toolTimeout)
 	out, callErr := target.Execute(toolCtx, arguments)
 	cancel()
@@ -341,7 +401,8 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 		eventType = EventToolError
 	}
 	emit.Emit(Event{Type: eventType, RunID: cfg.RunID, Step: step,
-		CallID: call.ID, ToolName: name, Result: text, Citations: out.Citations})
+		CallID: call.ID, ToolName: name, SourceID: sourceID, SourceName: sourceName,
+		Result: text, Citations: out.Citations})
 	return callOutcome{
 		toolMessage: message.Message{
 			Role: message.RoleTool, ToolCallID: call.ID, ToolName: name,
@@ -394,13 +455,17 @@ func mergeCitations(current, incoming []tool.Citation) []tool.Citation {
 	seen := make(map[string]struct{}, len(current)+len(incoming))
 	result := make([]tool.Citation, 0, len(current)+len(incoming))
 	for _, citation := range append(append([]tool.Citation(nil), current...), incoming...) {
-		if citation.URL == "" {
+		key := citation.URL
+		if citation.DocID > 0 {
+			key = fmt.Sprintf("doc:%d", citation.DocID)
+		}
+		if key == "" {
 			continue
 		}
-		if _, exists := seen[citation.URL]; exists {
+		if _, exists := seen[key]; exists {
 			continue
 		}
-		seen[citation.URL] = struct{}{}
+		seen[key] = struct{}{}
 		result = append(result, citation)
 	}
 	return result

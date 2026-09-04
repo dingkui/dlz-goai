@@ -4,6 +4,7 @@
 *.so
 *.dylib
 /target/
+/docs/temp/
 build/
 
 # 测试与覆盖率

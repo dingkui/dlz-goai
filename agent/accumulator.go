@@ -63,6 +63,9 @@ func (a *callAccumulator) Build() []tool.Call {
 	out := make([]tool.Call, 0, len(indexes))
 	for _, index := range indexes {
 		call := a.calls[index]
+		if call == nil || call.name.Len() == 0 {
+			continue // 某些服务会发空调用分片，跳过而非产出无名调用
+		}
 		arguments := strings.TrimSpace(call.arguments.String())
 		if arguments == "" {
 			arguments = "{}"
