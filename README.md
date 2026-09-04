@@ -17,8 +17,11 @@
 | `agent` | 工具调用循环：步骤上限、超时、截断、审批、事件流、并行执行 | `message` `tool` |
 | `mcp` | **MCP Tool Client / Adapter**（stdio + Streamable HTTP） | 无 |
 | `runtime` | 持久化运行：状态登记、事件落库、步级检查点、断点续跑、回放与订阅 | `agent` `message` `tool` |
+| `rag` | 检索增强：分块、Embedder/VectorStore/Retriever/Reranker 接口、RRF 融合、Pipeline、Retriever→Tool 适配 | `tool` |
+| `embedding/ollama` `embedding/openai` | 双厂商 Embedder 实现 | `rag` |
+| `storage/memory` | 内存 VectorStore（暴力余弦，开发/测试用） | `rag` |
 
-依赖严格单向：`llm` 不 import 任何 provider（接口与实现解耦，自定义实现零牵连）；`agent` 只认 `tool.Tool` 接口；`mcp` 可单独使用；`runtime` 依赖 `agent`，不反向依赖任何应用。
+依赖严格单向：`llm` 不 import 任何 provider；`agent` 只认 `tool.Tool`；`mcp` 可单独使用；`runtime` 依赖 `agent`；`rag` 只依赖 `tool`（不依赖 agent，可独立用，也可经 `rag.NewTool` 包成工具接入 agent）。
 
 > MCP 定位说明：本库实现 `initialize / tools/list / tools/call`，
 > 定位是 **MCP Tool Client / Adapter**（把 MCP 工具接入 agent），
@@ -86,7 +89,9 @@ agent.Config{Tools: tools, ToolExecution: agent.ToolParallel}
 
 - [x] 第一阶段：`message` `tool` `llm` `provider` `factory` `agent` `mcp`
 - [x] `runtime` — 持久化运行：状态机、EventStore、CheckpointStore、Resume、Replay、Subscribe、审批持久化、进程恢复
-- [ ] `rag` + `embedding` + `retrieval` + `storage` — 检索增强（可独立使用，可包装成 tool）
+- [x] `rag` + `embedding` + `storage` — 检索增强：分块、Embedder/VectorStore/Retriever/Reranker 接口、RRF 融合、Pipeline、Retriever→Tool 适配（可独立使用，可包装成 tool）
+- [ ] `retrieval/{vector,fulltext,hybrid}` + `rerank/{llm,score}` + `splitter/{text,markdown}` — 拆分检索策略与重排实现（当前策略在 rag 内，后续按需拆包）
+- [ ] `storage/sqlite` — SQLite 持久实现（VectorStore/FullTextStore/EventStore/CheckpointStore）
 - [ ] `compose` — 等真实应用产生编排需求后再评估（Graph / Workflow）
 
 ## runtime 用法
@@ -117,6 +122,29 @@ defer cancel()
 ```
 
 关键边界：**工具集是运行时对象、不可序列化**，所以 Resume 时工具由调用方重新提供——检查点保存"发生了什么"，不保存"能做什么"。
+
+## rag 用法
+
+rag 可独立构建知识库检索，也可经 `rag.NewTool` 包成工具接入 agent。
+
+```go
+// 建库：分块 → 向量化 → 存入 VectorStore
+store := memory.NewVectorStore()
+splitter := rag.TextSplitter{ChunkSize: 900}
+chunks := splitter.Split(doc.Content)
+vecs, _ := ollamaEmbedder.EmbedBatch(ctx, chunkTexts(chunks))
+_ = store.Store(ctx, doc.ID, chunks, vecs)
+
+// 检索：query → embed → search → 可选 rerank
+pipeline := rag.Pipeline{Embedder: ollamaEmbedder, Store: store, DefaultTopK: 5}
+hits, _ := pipeline.Retrieve(ctx, "查询问题", rag.RetrieveOptions{})
+
+// 接入 agent：把检索器包成工具
+tool := rag.NewTool("kb_search", "搜索知识库", pipeline, 5)
+result, _ := agent.New().Run(ctx, msgs, opts, agent.Config{Tools: []tool.Tool{tool}}, model, emit)
+```
+
+通用算法（`rag.Cosine`、`rag.EncodeVec`/`DecodeVec`）可直接复用，不依赖任何 Embedder。
 
 ## License
 
