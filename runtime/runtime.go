@@ -64,9 +64,9 @@ func (rt *Runtime) BeginRun() string { return rt.broker.Begin() }
 // 审批等待期间置为 WaitingApproval。
 //
 // cfg.RunID 必填（用 BeginRun() 生成）；emit 收到的事件与 EventStore
-// 落库内容一致。事件或检查点落库失败会中止运行（fail-closed）：
-// 持久化是"恢复不重做已完成步骤"这一承诺的前提，宁可让运行失败，
-// 也不静默丢失记录后假装可以恢复。
+// 落库内容一致。任何关键持久化失败（事件、检查点、状态登记）都会
+// 中止运行并纳入返回错误（fail-closed）：持久化是恢复语义的前提，
+// 宁可让运行失败，也不静默丢失记录后假装可以恢复。
 func (rt *Runtime) Run(ctx context.Context, initial []message.Message, opts *message.Options,
 	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter) (agent.Result, error) {
 	return rt.run(ctx, initial, opts, cfg, model, emit, false)
@@ -90,10 +90,18 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 	rt.mu.Unlock()
 	defer func() {
 		cancel()
+		// 运行结束：关闭该 Run 的全部订阅通道。消费者收到关闭信号后
+		// 可从 EventStore 补齐慢消费期间丢失的事件（见 Stream）。
+		// 只关闭自己从注册表移除的通道，与 unsubscribe 互不重复关闭。
 		rt.mu.Lock()
 		delete(rt.cancels, runID)
 		delete(rt.seqs, runID)
+		subs := rt.subs[runID]
+		delete(rt.subs, runID)
 		rt.mu.Unlock()
+		for ch := range subs {
+			close(ch)
+		}
 		rt.broker.End(runID)
 	}()
 
@@ -113,11 +121,13 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 			rt.seqs[runID] = last
 			rt.mu.Unlock()
 		}
-		rt.updateRecord(runID, func(r *RunRecord) {
+		if err := rt.updateRecord(runID, func(r *RunRecord) {
 			r.Status = StatusPending
 			r.Error = ""
 			r.PendingApproval = nil
-		})
+		}); err != nil {
+			return agent.Result{}, fmt.Errorf("runtime: failed to reset run for resume: %w", err)
+		}
 	} else if rt.runs != nil {
 		existing, err := rt.runs.Get(ctx, runID)
 		if err == nil {
@@ -137,7 +147,9 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 		}
 	}
 	rt.broker.Bind(runID)
-	rt.setStatus(runID, StatusRunning)
+	if err := rt.setStatus(runID, StatusRunning); err != nil {
+		return agent.Result{}, fmt.Errorf("runtime: failed to persist running status: %w", err)
+	}
 
 	// 持久化失败即中止（fail-closed）：事件与检查点是恢复语义的前提。
 	// cancel 停止后续生成；首个错误保留为本次运行的最终错误。
@@ -179,10 +191,20 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 		wrapped(agent.Event{Type: agent.EventRunResumed, RunID: runID})
 	}
 
-	// 检查点：调用级（每条工具回执入轨迹即存）+ 步级（整步收尾再存一次）。
-	// 崩溃后需要重做的窗口由"整步"缩小到"单个工具调用"；
-	// 未落库的已完成调用由 Resume 对账（见 resume.go）。
+	// 检查点：初始（保证首个审批等待前就有可恢复点）+ 调用级（每条
+	// 工具回执入轨迹即存）+ 步级（整步收尾再存一次）。
+	// 调用级检查点可能停在步中途，Resume 时由 trimDangling 回退到
+	// 协议安全边界；被丢弃段中已完成的调用由事件对账复用（见 resume.go）。
 	if rt.checkpoints != nil {
+		if !resume {
+			if err := rt.checkpoints.Save(context.Background(), Checkpoint{
+				RunID: runID, Step: 0, CallIndex: -1,
+				Messages: append([]message.Message(nil), initial...),
+				Options:  opts, CreatedAt: now(),
+			}); err != nil {
+				return agent.Result{}, fmt.Errorf("runtime: failed to save initial checkpoint: %w", err)
+			}
+		}
 		saveCheckpoint := func(step, callIndex int, messages []message.Message) {
 			if err := rt.checkpoints.Save(context.Background(), Checkpoint{
 				RunID: runID, Step: step, CallIndex: callIndex,
@@ -195,7 +217,9 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 		innerStep := cfg.OnStep
 		cfg.OnStep = func(step int, messages []message.Message) {
 			saveCheckpoint(step, -1, messages)
-			rt.updateRecord(runID, func(r *RunRecord) { r.LastStep = step })
+			if err := rt.updateRecord(runID, func(r *RunRecord) { r.LastStep = step }); err != nil {
+				failClosed(err)
+			}
 			if innerStep != nil {
 				innerStep(step, messages)
 			}
@@ -211,23 +235,30 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 
 	// 审批由 Runtime 的 Broker 默认承接，调用方可通过 Approve 在另一个
 	// HTTP 请求中提交决策；显式提供 Approve 时仍尊重调用方实现。
+	// 审批前后的状态登记失败会中止运行——带着错误的持久化状态继续
+	// 执行比中断更危险（重启后会误判运行状态）。
 	if cfg.Approve == nil {
 		cfg.Approve = rt.ApprovalHandler(runID)
 	}
 	innerApprove := cfg.Approve
 	cfg.Approve = agent.ApprovalFunc(func(ctx context.Context, req agent.ApprovalRequest) (bool, error) {
-		rt.updateRecord(runID, func(r *RunRecord) {
+		if err := rt.updateRecord(runID, func(r *RunRecord) {
 			r.Status = StatusWaitingApproval
 			r.PendingApproval = &PendingApproval{
 				CallID: req.CallID, ToolName: req.ToolName,
 				SourceName: req.SourceName, Arguments: req.Arguments,
 			}
-		})
-		defer rt.updateRecord(runID, func(r *RunRecord) {
+		}); err != nil {
+			return false, fmt.Errorf("runtime: failed to persist approval wait: %w", err)
+		}
+		decision, derr := innerApprove.Request(ctx, req)
+		if uerr := rt.updateRecord(runID, func(r *RunRecord) {
 			r.Status = StatusRunning
 			r.PendingApproval = nil
-		})
-		return innerApprove.Request(ctx, req)
+		}); uerr != nil && derr == nil {
+			return false, fmt.Errorf("runtime: failed to persist approval resume: %w", uerr)
+		}
+		return decision, derr
 	})
 
 	result, err := rt.runner.Run(runCtx, initial, opts, cfg, model, wrapped)
@@ -250,11 +281,15 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 		final = StatusFailed
 		errText = persistErr.Error()
 	}
-	rt.updateRecord(runID, func(r *RunRecord) {
+	// 终态提交顺序：先登记状态，再写终态事件；两处失败都纳入返回值——
+	// 不允许"数据库停在非终态 / 缺终态事件"的同时向调用方返回成功。
+	if uerr := rt.updateRecord(runID, func(r *RunRecord) {
 		r.Status = final
 		r.Error = errText
 		r.PendingApproval = nil
-	})
+	}); uerr != nil {
+		return result, fmt.Errorf("runtime: failed to persist terminal status: %w", uerr)
+	}
 	terminal := agent.Event{Type: agent.EventRunDone, RunID: runID,
 		PromptTokens: result.PromptTokens, EvalTokens: result.EvalTokens,
 		EvalMs: result.EvalMs, TotalMs: result.TotalMs}
@@ -262,7 +297,16 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 		terminal.Type = agent.EventRunError
 		terminal.Error = errText
 	}
+	persistErrBeforeTerminal := persistErr
 	wrapped(terminal)
+	if persistErr != persistErrBeforeTerminal {
+		// 终态事件落库失败：登记降级为 failed（尽力而为），返回错误。
+		_ = rt.updateRecord(runID, func(r *RunRecord) {
+			r.Status = StatusFailed
+			r.Error = persistErr.Error()
+		})
+		return result, persistErr
+	}
 	return result, err
 }
 
@@ -276,9 +320,10 @@ func (rt *Runtime) ApprovalHandler(runID string) agent.ApprovalHandler {
 // （检查点只保存"发生了什么"，不保存"能做什么"）；
 // 恢复后引用从续跑点重新累积，历史引用可从 EventStore 回放。
 //
-// 恢复对账：检查点之后、事件库中已执行且有结果记录的调用，在模型
-// 重新发起同样调用时直接复用结果、不重复执行；已开始执行但无结果
-// 记录的调用按工具的 RetryPolicy 分级（见 resume.go）。
+// 恢复对账：轨迹先回退到最后一个协议安全边界（trimDangling），
+// 之后事件库中已执行且有结果记录的调用，在模型重新发起同样调用时
+// 直接复用结果、不重复执行；已开始执行但无结果记录的调用按工具的
+// RetryPolicy 分级（见 resume.go）。
 func (rt *Runtime) Resume(ctx context.Context, runID string,
 	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter) (agent.Result, error) {
 
@@ -305,9 +350,12 @@ func (rt *Runtime) Resume(ctx context.Context, runID string,
 	if err != nil {
 		return agent.Result{}, err
 	}
+	// 回退到协议安全边界：悬空的 tool_calls 会被部分模型服务拒绝；
+	// 被丢弃段中已完成的调用由事件对账复用，不会重复执行。
+	messages := trimDangling(cp.Messages)
 	cfg.RunID = runID
 	if len(cfg.Tools) > 0 {
-		idx, idxErr := rt.buildResumeIndex(ctx, runID, cp.Messages)
+		idx, idxErr := rt.buildResumeIndex(ctx, runID, messages)
 		if idxErr != nil {
 			return agent.Result{}, idxErr
 		}
@@ -319,7 +367,7 @@ func (rt *Runtime) Resume(ctx context.Context, runID string,
 			cfg.Tools = tools
 		}
 	}
-	return rt.run(ctx, cp.Messages, cp.Options, cfg, model, emit, true)
+	return rt.run(ctx, messages, cp.Options, cfg, model, emit, true)
 }
 
 // Approve 提交审批决策（等待中的运行由审批 Handler 解除阻塞）。
@@ -346,9 +394,11 @@ func (rt *Runtime) Replay(ctx context.Context, runID string) ([]agent.Event, err
 	return rt.events.List(ctx, runID)
 }
 
-// Subscribe 订阅进行中运行的事件流，返回通道与取消订阅函数。
-// 通道缓冲有限，慢消费者会丢事件（订阅面向 UI 广播，
-// 需要完整事件请用 Replay）。
+// Subscribe 订阅运行事件流，返回通道与取消订阅函数。
+//
+// 通道缓冲有限，慢消费者会丢事件（订阅面向 UI 广播）；运行结束时
+// 通道会被关闭。需要完整、不丢的事件序列请用 Stream（自动补读缺口）
+// 或 Replay。
 func (rt *Runtime) Subscribe(runID string) (<-chan agent.Event, func()) {
 	ch := make(chan agent.Event, 256)
 	rt.mu.Lock()
@@ -359,19 +409,27 @@ func (rt *Runtime) Subscribe(runID string) (<-chan agent.Event, func()) {
 	rt.mu.Unlock()
 	unsubscribe := func() {
 		rt.mu.Lock()
-		delete(rt.subs[runID], ch)
-		if len(rt.subs[runID]) == 0 {
-			delete(rt.subs, runID)
+		if _, stillRegistered := rt.subs[runID][ch]; stillRegistered {
+			delete(rt.subs[runID], ch)
+			if len(rt.subs[runID]) == 0 {
+				delete(rt.subs, runID)
+			}
+			rt.mu.Unlock()
+			close(ch)
+			return
 		}
 		rt.mu.Unlock()
-		close(ch)
+		// 通道已由运行结束路径关闭并移出注册表，此处不重复关闭。
 	}
 	return ch, unsubscribe
 }
 
 // Stream 先回放已持久化事件，再追随同一运行的实时事件。
-// afterSeq 用于断线续传；传 0 表示从头回放。订阅先于回放建立，
-// 并用 Seq 去重，因此不会丢失“回放查询期间”刚产生的事件。
+// afterSeq 用于断线续传；传 0 表示从头回放。
+//
+// 实时通道缓冲有限，消费不及时会丢事件：检测到 Seq 缺口时自动从
+// EventStore 补读；运行结束关闭通道后做最终补齐——因此 Stream 交付的
+// 事件序列与 Replay 一致（Seq 连续、含终态事件），慢消费者不丢数据。
 func (rt *Runtime) Stream(ctx context.Context, runID string, afterSeq int64, emit agent.Emitter) error {
 	ch, unsubscribe := rt.Subscribe(runID)
 	defer unsubscribe()
@@ -419,9 +477,22 @@ func (rt *Runtime) Stream(ctx context.Context, runID string, afterSeq int64, emi
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case event := <-ch:
+		case event, ok := <-ch:
+			if !ok {
+				// 运行已结束且通道关闭：最终补齐，交付慢消费期间
+				// 丢掉的事件（含终态事件）。
+				return rt.streamFinalBackfill(ctx, runID, last, emit)
+			}
 			if event.Seq <= last {
 				continue
+			}
+			if event.Seq > last+1 {
+				// 缺口：补读 (last, event.Seq) 之间被丢弃的事件。
+				filled, err := rt.streamBackfillRange(ctx, runID, last, event.Seq, emit)
+				if err != nil {
+					return err
+				}
+				last = filled
 			}
 			emit.Emit(event)
 			last = event.Seq
@@ -430,6 +501,67 @@ func (rt *Runtime) Stream(ctx context.Context, runID string, afterSeq int64, emi
 			}
 		}
 	}
+}
+
+// streamBackfillRange 补读 (last, upper) 开区间内已持久化的事件并交付。
+// 终态事件不在补读范围——当前运行的终点由实时通道或最终补齐交付，
+// 历史尝试的终点事件不应中断本次订阅。
+func (rt *Runtime) streamBackfillRange(ctx context.Context, runID string, last, upper int64, emit agent.Emitter) (int64, error) {
+	events, err := rt.Replay(ctx, runID)
+	if err != nil {
+		return last, err
+	}
+	for _, event := range events {
+		if event.Seq <= last || event.Seq >= upper {
+			continue
+		}
+		if event.Type == agent.EventRunDone || event.Type == agent.EventRunError {
+			continue
+		}
+		last = event.Seq
+		emit.Emit(event)
+	}
+	return last, nil
+}
+
+// streamFinalBackfill 运行结束后的最终补齐：交付 last 之后全部已持久化
+// 事件。Store 中最后一个事件即本次终点；若终态事件因落库失败缺失，
+// 用登记状态合成一个兜底，保证消费者能看到明确的结束信号。
+func (rt *Runtime) streamFinalBackfill(ctx context.Context, runID string, last int64, emit agent.Emitter) error {
+	events, err := rt.Replay(ctx, runID)
+	if err != nil {
+		return err
+	}
+	sawTerminal := false
+	if n := len(events); n > 0 {
+		maxSeq := events[n-1].Seq
+		for _, event := range events {
+			if event.Seq <= last {
+				continue
+			}
+			terminal := event.Type == agent.EventRunDone || event.Type == agent.EventRunError
+			// 历史尝试的终点事件跳过；本次终点是 Store 中最后一个事件。
+			if terminal && event.Seq != maxSeq {
+				continue
+			}
+			last = event.Seq
+			emit.Emit(event)
+			if terminal {
+				sawTerminal = true
+			}
+		}
+	}
+	if !sawTerminal {
+		record, getErr := rt.Get(ctx, runID)
+		if getErr == nil && record.Status.Terminal() {
+			typ := agent.EventRunDone
+			if record.Status != StatusSucceeded {
+				typ = agent.EventRunError
+			}
+			emit.Emit(agent.Event{Type: typ, RunID: runID, Seq: last + 1, Error: record.Error})
+		}
+	}
+	return nil
 }
 
 // Get 查询一次运行的登记信息。
@@ -475,20 +607,20 @@ func (rt *Runtime) broadcast(runID string, e agent.Event) {
 	}
 }
 
-func (rt *Runtime) setStatus(runID string, status Status) {
-	rt.updateRecord(runID, func(r *RunRecord) { r.Status = status })
+func (rt *Runtime) setStatus(runID string, status Status) error {
+	return rt.updateRecord(runID, func(r *RunRecord) { r.Status = status })
 }
 
-func (rt *Runtime) updateRecord(runID string, mutate func(*RunRecord)) {
+func (rt *Runtime) updateRecord(runID string, mutate func(*RunRecord)) error {
 	if rt.runs == nil {
-		return
+		return nil
 	}
 	ctx := context.Background()
 	record, err := rt.runs.Get(ctx, runID)
 	if err != nil {
-		return
+		return err
 	}
 	mutate(&record)
 	record.UpdatedAt = now()
-	_ = rt.runs.Update(ctx, record)
+	return rt.runs.Update(ctx, record)
 }
