@@ -36,11 +36,11 @@ func NewServerClient(server Server) (ServerClient, error) {
 func ValidateServer(server Server) error {
 	if server.ID != "" {
 		if len(server.ID) > maxServerIDLength || !serverIDRE.MatchString(server.ID) || strings.Contains(server.ID, "__") {
-			return errors.New("MCP 服务 id 仅允许 1-64 位字母、数字、下划线或连字符，且不能包含连续双下划线")
+			return errors.New("MCP server id must be 1-64 chars of letters, digits, underscore or hyphen, without consecutive underscores")
 		}
 	}
 	if len(strings.TrimSpace(server.Name)) > 128 {
-		return errors.New("MCP 服务名称不能超过 128 个字符")
+		return errors.New("MCP server name exceeds 128 characters")
 	}
 	switch server.TransportType() {
 	case TransportHTTP:
@@ -48,34 +48,34 @@ func ValidateServer(server Server) error {
 	case TransportStdio:
 		return validateStdioConfig(server)
 	default:
-		return fmt.Errorf("不支持的 MCP 传输方式: %s", server.Transport)
+		return fmt.Errorf("unsupported MCP transport: %s", server.Transport)
 	}
 }
 
 func validateHTTPConfig(server Server) error {
 	rawURL := strings.TrimSpace(server.URL)
 	if rawURL == "" {
-		return fmt.Errorf("MCP 服务「%s」缺少 URL", server.Name)
+		return fmt.Errorf("MCP server %q is missing a URL", server.Name)
 	}
 	if len(rawURL) > 4096 {
-		return errors.New("MCP server URL 过长")
+		return errors.New("MCP server URL too long")
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return errors.New("MCP server URL 必须是有效的 HTTP 或 HTTPS 地址")
+		return errors.New("MCP server URL must be a valid HTTP or HTTPS address")
 	}
 	if parsed.User != nil {
-		return errors.New("MCP server URL 不允许包含用户名或密码，请使用请求头鉴权")
+		return errors.New("MCP server URL must not embed credentials; use headers for auth")
 	}
 	if len(server.Headers) > 64 {
-		return errors.New("MCP 自定义请求头不能超过 64 项")
+		return errors.New("MCP custom headers exceed 64 entries")
 	}
 	for name, value := range server.Headers {
 		if !headerRE.MatchString(name) || len(value) > maxConfigValue || strings.ContainsAny(value, "\r\n") {
-			return fmt.Errorf("MCP 请求头无效: %s", name)
+			return fmt.Errorf("MCP invalid header name: %s", name)
 		}
 		if isReservedHeader(name) {
-			return fmt.Errorf("MCP 请求头 %s 由客户端管理，不能自定义", name)
+			return fmt.Errorf("MCP header %s is client-managed and cannot be overridden", name)
 		}
 	}
 	return nil
@@ -84,22 +84,22 @@ func validateHTTPConfig(server Server) error {
 func validateStdioConfig(server Server) error {
 	command := strings.TrimSpace(server.Command)
 	if command == "" {
-		return fmt.Errorf("MCP 服务「%s」缺少启动命令", server.Name)
+		return fmt.Errorf("MCP server %q is missing a launch command", server.Name)
 	}
 	if len(command) > 4096 || strings.ContainsRune(command, '\x00') {
-		return errors.New("MCP 启动命令无效")
+		return errors.New("MCP invalid launch command")
 	}
 	if len(server.Args) > maxConfigItems || len(server.Env) > maxConfigItems {
-		return errors.New("MCP 命令参数或环境变量数量过多")
+		return errors.New("too many MCP command args or env vars")
 	}
 	for _, arg := range server.Args {
 		if len(arg) > maxConfigValue || strings.ContainsRune(arg, '\x00') {
-			return errors.New("MCP 命令参数无效或过长")
+			return errors.New("MCP command argument invalid or too long")
 		}
 	}
 	for name, value := range server.Env {
 		if !envNameRE.MatchString(name) || len(value) > maxConfigValue || strings.ContainsRune(value, '\x00') {
-			return fmt.Errorf("MCP 环境变量无效: %s", name)
+			return fmt.Errorf("MCP invalid env var name: %s", name)
 		}
 	}
 	return nil

@@ -10,11 +10,11 @@ import (
 
 var (
 	// ErrRunNotFound 运行不存在或已结束。
-	ErrRunNotFound = errors.New("agent: 运行不存在或已结束")
+	ErrRunNotFound = errors.New("agent: run not found or already finished")
 	// ErrApprovalNotPending 该调用当前不在等待审批。
-	ErrApprovalNotPending = errors.New("agent: 工具调用当前不等待审批")
+	ErrApprovalNotPending = errors.New("agent: tool call is not pending approval")
 	// ErrApprovalAborted 等待审批时被中断（上下文取消或运行结束）。
-	ErrApprovalAborted = errors.New("agent: 工具审批被中断")
+	ErrApprovalAborted = errors.New("agent: tool approval aborted")
 )
 
 // ApprovalRequest 描述一次需要确认的工具调用。
@@ -135,7 +135,7 @@ func (b *Broker) Wait(ctx context.Context, runID string, req ApprovalRequest) (b
 	}
 	if _, exists := pending[req.CallID]; exists {
 		b.mu.Unlock()
-		return false, errors.New("agent: 工具调用审批标识重复")
+		return false, errors.New("agent: duplicate approval call ID")
 	}
 	pending[req.CallID] = decision
 	b.mu.Unlock()

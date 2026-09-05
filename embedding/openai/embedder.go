@@ -47,7 +47,7 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 		return nil, err
 	}
 	if len(vecs) == 0 {
-		return nil, fmt.Errorf("openai: 未返回向量")
+		return nil, fmt.Errorf("openai: no vectors returned")
 	}
 	return vecs[0], nil
 }
@@ -69,7 +69,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 	}
 	resp, err := e.client().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("openai: 连接失败: %w", err)
+		return nil, fmt.Errorf("openai: connection failed: %w", err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
@@ -83,7 +83,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("openai: 解析响应失败: %w", err)
+		return nil, fmt.Errorf("openai: failed to parse response: %w", err)
 	}
 	// 按 index 排序还原输入顺序（服务端可能乱序返回）
 	sort.Slice(out.Data, func(i, j int) bool { return out.Data[i].Index < out.Data[j].Index })

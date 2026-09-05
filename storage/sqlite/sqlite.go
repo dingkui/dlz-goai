@@ -61,7 +61,7 @@ var schema = []string{
 func Open(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: 打开失败: %w", err)
+		return nil, fmt.Errorf("sqlite: open failed: %w", err)
 	}
 	// WAL：读写并发；busy_timeout：多连接写冲突时等待而非立即报错
 	for _, pragma := range []string{
@@ -71,7 +71,7 @@ func Open(path string) (*sql.DB, error) {
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			db.Close()
-			return nil, fmt.Errorf("sqlite: pragma 失败: %w", err)
+			return nil, fmt.Errorf("sqlite: pragma failed: %w", err)
 		}
 	}
 	if err := Migrate(db); err != nil {
@@ -86,7 +86,7 @@ func Open(path string) (*sql.DB, error) {
 func Migrate(db *sql.DB) error {
 	for _, stmt := range schema {
 		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("sqlite: 迁移失败: %w", err)
+			return fmt.Errorf("sqlite: migration failed: %w", err)
 		}
 	}
 	return nil

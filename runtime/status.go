@@ -48,16 +48,16 @@ func (s Status) Terminal() bool {
 }
 
 // ErrNoCheckpoint 指定运行没有检查点（从未跑过或未配置检查点存储）。
-var ErrNoCheckpoint = errors.New("runtime: 检查点不存在")
+var ErrNoCheckpoint = errors.New("runtime: checkpoint not found")
 
 // ErrRunNotFound 指定运行不存在。
-var ErrRunNotFound = errors.New("runtime: 运行不存在")
+var ErrRunNotFound = errors.New("runtime: run not found")
 
 // ErrRunTerminal 运行已成功结束，不能再次发起或续跑。
-var ErrRunTerminal = errors.New("runtime: 运行已结束")
+var ErrRunTerminal = errors.New("runtime: run already finished")
 
 // ErrRunActive 运行仍处于 pending/running/waiting_approval，不能重复发起或续跑。
-var ErrRunActive = errors.New("runtime: 运行仍在进行")
+var ErrRunActive = errors.New("runtime: run still in progress")
 
 // PendingApproval 等待审批的调用信息（WaitingApproval 状态时有值）。
 // 进程重启后调用方可据此重建“中断前曾等待审批”的界面；原等待器

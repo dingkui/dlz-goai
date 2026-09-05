@@ -25,7 +25,7 @@ func NewVectorStore(db *sql.DB) *VectorStore { return &VectorStore{db: db} }
 // Store 存入文档块与向量（同 docID 全量覆盖，事务保证原子性）。
 func (s *VectorStore) Store(ctx context.Context, docID string, chunks []rag.Chunk, vectors [][]float32) error {
 	if len(chunks) != len(vectors) {
-		return fmt.Errorf("sqlite: chunks(%d) 与 vectors(%d) 数量不一致", len(chunks), len(vectors))
+		return fmt.Errorf("sqlite: chunks(%d) and vectors(%d) count mismatch", len(chunks), len(vectors))
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

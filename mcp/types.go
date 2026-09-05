@@ -5,7 +5,10 @@
 // 本包支持 stdio 与 Streamable HTTP 传输。
 package mcp
 
-import "context"
+import (
+	"context"
+	"runtime/debug"
+)
 
 const (
 	TransportHTTP  = "http"
@@ -59,6 +62,20 @@ type InitializeParams struct {
 type ClientInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+}
+
+// DefaultClientInfo 返回默认客户端标识：name 为 "dlz-goai"，
+// version 从构建信息推断（不可得时为 "dev"）。
+// 宿主应用应通过 Client.Info / StdioClient.Info 覆盖为自己的产品名，
+// 便于 MCP server 侧识别真实的调用方。
+func DefaultClientInfo() ClientInfo {
+	info := ClientInfo{Name: "dlz-goai", Version: "dev"}
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		if v := bi.Main.Version; v != "" && v != "(devel)" {
+			info.Version = v
+		}
+	}
+	return info
 }
 
 // InitializeResult initialize 响应结果。

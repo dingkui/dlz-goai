@@ -178,13 +178,13 @@ func TestRunPolicyDeny(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolMsg := result.Messages[2]
-	if toolMsg.Role != message.RoleTool || !strings.Contains(toolMsg.Content, "禁止") {
+	if toolMsg.Role != message.RoleTool || !strings.Contains(toolMsg.Content, "denied by policy") {
 		t.Fatalf("应收到策略禁止回执: %+v", toolMsg)
 	}
 	var found bool
 	for _, event := range events {
 		if event.Type == EventToolError && event.CallID == "c1" &&
-			event.ToolName == "stub_tool" && strings.Contains(event.Error, "禁止") {
+			event.ToolName == "stub_tool" && strings.Contains(event.Error, "denied by policy") {
 			found = true
 		}
 	}
@@ -221,7 +221,7 @@ func TestRunDefaultRequiresApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Messages[2].Content, "未批准") {
+	if !strings.Contains(result.Messages[2].Content, "not approved") {
 		t.Fatalf("应收到未批准回执: %+v", result.Messages[2])
 	}
 }

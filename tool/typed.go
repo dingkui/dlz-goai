@@ -32,11 +32,11 @@ func Typed[In any](name, description string, readOnly bool, handler func(context
 		Handler: func(ctx context.Context, args map[string]any) (Result, error) {
 			encoded, err := json.Marshal(args)
 			if err != nil {
-				return Error("工具参数无法编码: " + err.Error()), nil
+				return Error("tool arguments cannot be encoded: " + err.Error()), nil
 			}
 			var input In
 			if err := json.Unmarshal(encoded, &input); err != nil {
-				return Error(fmt.Sprintf("参数与定义不符: %v；schema: %s", err, encoded)), nil
+				return Error(fmt.Sprintf("arguments do not match the schema: %v; schema: %s", err, encoded)), nil
 			}
 			return handler(ctx, input)
 		},

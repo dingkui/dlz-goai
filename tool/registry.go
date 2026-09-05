@@ -61,16 +61,16 @@ func NewRegistry() *Registry {
 // 名字冲突几乎总是配置错误。
 func (r *Registry) Register(t Tool) error {
 	if t == nil {
-		return fmt.Errorf("tool: 工具为 nil")
+		return fmt.Errorf("tool: nil tool")
 	}
 	name := t.Definition().Name
 	if name == "" {
-		return fmt.Errorf("tool: 工具名为空")
+		return fmt.Errorf("tool: empty name")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.tools[name]; exists {
-		return fmt.Errorf("tool: 工具 %s 已注册", name)
+		return fmt.Errorf("tool: %s already registered", name)
 	}
 	r.tools[name] = t
 	return nil

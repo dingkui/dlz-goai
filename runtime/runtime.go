@@ -77,7 +77,7 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 
 	runID := cfg.RunID
 	if runID == "" {
-		return agent.Result{}, errors.New("runtime: cfg.RunID 为空，用 BeginRun() 生成")
+		return agent.Result{}, errors.New("runtime: cfg.RunID is empty; generate one with BeginRun()")
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	rt.mu.Lock()
@@ -145,7 +145,7 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 	var persistOnce sync.Once
 	failClosed := func(err error) {
 		persistOnce.Do(func() {
-			persistErr = fmt.Errorf("runtime: 持久化失败，运行已中止: %w", err)
+			persistErr = fmt.Errorf("runtime: persistence failed, run aborted: %w", err)
 			cancel()
 		})
 	}
@@ -242,7 +242,7 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 		errText = err.Error()
 		if ctx.Err() != nil || runCtx.Err() != nil {
 			final = StatusCanceled
-			errText = "已取消"
+			errText = "canceled"
 		}
 	}
 	if persistErr != nil {
@@ -283,7 +283,7 @@ func (rt *Runtime) Resume(ctx context.Context, runID string,
 	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter) (agent.Result, error) {
 
 	if rt.checkpoints == nil {
-		return agent.Result{}, errors.New("runtime: 未配置检查点存储，无法恢复")
+		return agent.Result{}, errors.New("runtime: no checkpoint store configured, cannot resume")
 	}
 	if rt.runs != nil {
 		rec, err := rt.Get(ctx, runID)
@@ -298,7 +298,7 @@ func (rt *Runtime) Resume(ctx context.Context, runID string,
 		case StatusFailed, StatusCanceled:
 			// 失败与取消都允许从最后一个完整步骤续跑。
 		default:
-			return agent.Result{}, errors.New("runtime: 未知运行状态 " + string(rec.Status))
+			return agent.Result{}, errors.New("runtime: unknown run status " + string(rec.Status))
 		}
 	}
 	cp, err := rt.checkpoints.Load(ctx, runID)
@@ -453,9 +453,9 @@ func (rt *Runtime) Recover(ctx context.Context) (int, error) {
 	}
 	for _, rec := range stuck {
 		rec.Status = StatusFailed
-		rec.Error = "进程中断，可从检查点恢复"
+		rec.Error = "process interrupted; resumable from checkpoint"
 		if rec.PendingApproval != nil {
-			rec.Error = "进程在等待审批时中断，请确认后从检查点恢复"
+			rec.Error = "process interrupted while waiting for approval; confirm and resume from checkpoint"
 		}
 		if err := rt.runs.Update(ctx, rec); err != nil {
 			return 0, err

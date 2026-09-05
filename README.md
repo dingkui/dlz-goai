@@ -32,6 +32,10 @@
 > MCP 定位说明：本库实现 `initialize / tools/list / tools/call`，
 > 定位是 **MCP Tool Client / Adapter**（把 MCP 工具接入 agent），
 > 不是完整的 MCP SDK——resources、prompts、sampling 等不在当前范围。
+>
+> 客户端标识：initialize 默认上报 `DefaultClientInfo()`（name 为 "dlz-goai"，
+> version 从构建信息推断）；宿主应用应通过 `Client.Info` / `StdioClient.Info`
+> 覆盖为自己的产品名，便于 MCP server 侧识别真实调用方。
 
 ## 快速开始
 

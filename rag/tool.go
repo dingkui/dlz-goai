@@ -30,7 +30,7 @@ func NewTool(name, description string, retriever Retriever, defaultTopK int) too
 		func(ctx context.Context, args map[string]any) (tool.Result, error) {
 			query, _ := args["query"].(string)
 			if query == "" {
-				return tool.Error("query 不能为空"), nil
+				return tool.Error("query must not be empty"), nil
 			}
 			topK := defaultTopK
 			if raw, ok := args["top_k"]; ok {

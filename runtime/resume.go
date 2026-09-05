@@ -120,7 +120,7 @@ func (rt *Runtime) buildResumeIndex(ctx context.Context, runID string,
 			if content == "" && e.Error != "" {
 				// errOutcome 类事件（未注册/参数非法/被拒绝/审批中断）：
 				// 原始回执内容即"错误：原因"。
-				content = "错误：" + e.Error
+				content = "error: " + e.Error
 			}
 			idx.results[callKey(e.ToolName, arguments[e.CallID])] = append(
 				idx.results[callKey(e.ToolName, arguments[e.CallID])],
@@ -169,12 +169,12 @@ func (t *resumeTool) Execute(ctx context.Context, arguments map[string]any) (too
 		t.idx.inflight[key]--
 		switch tool.PolicyOf(t.Tool) {
 		case tool.RetryPolicyNoRetry:
-			return tool.Error("恢复提示：该调用在上次运行中断前已开始执行且没有结果记录，" +
-				"工具声明为 NoRetry（可能已产生不可重复的副作用），未自动重试。" +
-				"请先用只读工具核实外部状态，或转人工处理。"), nil
+			return tool.Error("Recovery notice: this call was started before the previous run was interrupted but produced no recorded result. " +
+				"The tool declares NoRetry (possibly non-idempotent side effects); it was not retried automatically. " +
+				"Verify external state with a read-only tool first, or escalate to a human."), nil
 		case tool.RetryPolicyNeedsVerify:
-			return tool.Error("恢复提示：该调用在上次运行中断前已开始执行且没有结果记录，" +
-				"未直接重试。请先核实外部状态（如查询操作是否已生效），确认后再重新发起。"), nil
+			return tool.Error("Recovery notice: this call was started before the previous run was interrupted but produced no recorded result. " +
+				"It was not retried directly. Verify the external state first (e.g. whether the operation already took effect), then re-issue the call if needed."), nil
 		}
 		// RetrySafe：正常重新执行。
 	}

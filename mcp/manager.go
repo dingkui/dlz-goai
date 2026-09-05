@@ -294,17 +294,17 @@ func stringSet(values []string) map[string]struct{} {
 func (m *Manager) CallTool(ctx context.Context, fullToolName string, args map[string]any) (CallToolResult, error) {
 	serverID, toolName, ok := ParseFullName(fullToolName)
 	if !ok {
-		return CallToolResult{}, fmt.Errorf("工具名格式错误: %s", fullToolName)
+		return CallToolResult{}, fmt.Errorf("invalid tool name: %s", fullToolName)
 	}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return CallToolResult{}, errors.New("MCP 管理器已关闭")
+		return CallToolResult{}, errors.New("MCP manager is closed")
 	}
 	st, ok := m.states[serverID]
 	if !ok || !st.server.Enabled {
 		m.mu.Unlock()
-		return CallToolResult{}, fmt.Errorf("MCP 服务 %s 不可用", serverID)
+		return CallToolResult{}, fmt.Errorf("MCP server %s is unavailable", serverID)
 	}
 	found := false
 	for _, tool := range st.tools {
@@ -315,7 +315,7 @@ func (m *Manager) CallTool(ctx context.Context, fullToolName string, args map[st
 	}
 	if !found {
 		m.mu.Unlock()
-		return CallToolResult{}, fmt.Errorf("MCP 工具 %s 不可用", fullToolName)
+		return CallToolResult{}, fmt.Errorf("MCP tool %s is unavailable", fullToolName)
 	}
 	if st.client == nil {
 		client, err := NewServerClient(st.server)

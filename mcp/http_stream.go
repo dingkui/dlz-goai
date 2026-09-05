@@ -61,7 +61,7 @@ func readSSERPCResponse(body io.Reader, requestID int64) (JSONRPCResponse, error
 		}
 		part := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
 		if len(data)+len(part)+1 > maxHTTPResponseBytes {
-			return JSONRPCResponse{}, errors.New("MCP SSE 事件超过 16 MiB 限制")
+			return JSONRPCResponse{}, errors.New("MCP SSE event exceeds the 16 MiB limit")
 		}
 		if len(data) > 0 {
 			data = append(data, '\n')
@@ -74,5 +74,5 @@ func readSSERPCResponse(body io.Reader, requestID int64) (JSONRPCResponse, error
 	if response, matched, err := consume(); matched || err != nil {
 		return response, err
 	}
-	return JSONRPCResponse{}, fmt.Errorf("MCP SSE 响应中没有匹配请求 %d 的 JSON-RPC 结果", requestID)
+	return JSONRPCResponse{}, fmt.Errorf("MCP SSE stream has no JSON-RPC result matching request %d", requestID)
 }

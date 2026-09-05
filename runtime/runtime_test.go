@@ -232,7 +232,7 @@ func TestRuntimeRecover(t *testing.T) {
 	}
 	rec, _ := runs.Get(ctx, "r2")
 	if rec.Status != runtime.StatusFailed || rec.PendingApproval == nil ||
-		rec.PendingApproval.CallID != "c1" || !strings.Contains(rec.Error, "恢复") {
+		rec.PendingApproval.CallID != "c1" || !strings.Contains(rec.Error, "interrupted") {
 		t.Fatalf("恢复状态不符: %+v", rec)
 	}
 	ok, _ := runs.Get(ctx, "r3")

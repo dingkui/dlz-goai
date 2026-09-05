@@ -51,7 +51,7 @@ func (e *Embedder) Embed(ctx context.Context, text string) ([]float32, error) {
 		return nil, err
 	}
 	if len(vecs) == 0 {
-		return nil, fmt.Errorf("ollama: 未返回向量")
+		return nil, fmt.Errorf("ollama: no vectors returned")
 	}
 	return vecs[0], nil
 }
@@ -69,7 +69,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := e.client().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ollama: 连接失败: %w", err)
+		return nil, fmt.Errorf("ollama: connection failed: %w", err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
@@ -82,7 +82,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 		Embedding  []float32   `json:"embedding"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("ollama: 解析响应失败: %w", err)
+		return nil, fmt.Errorf("ollama: failed to parse response: %w", err)
 	}
 	if len(out.Embeddings) > 0 {
 		return out.Embeddings, nil
@@ -90,5 +90,5 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32,
 	if len(out.Embedding) > 0 {
 		return [][]float32{out.Embedding}, nil
 	}
-	return nil, fmt.Errorf("ollama: 响应不含向量")
+	return nil, fmt.Errorf("ollama: response contains no vectors")
 }

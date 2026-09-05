@@ -38,7 +38,7 @@ func (s *RunStore) Create(ctx context.Context, record runtime.RunRecord) error {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("sqlite: 运行 %s 已存在", record.ID)
+		return fmt.Errorf("sqlite: run %s already exists", record.ID)
 	}
 	return nil
 }

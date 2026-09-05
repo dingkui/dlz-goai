@@ -45,6 +45,9 @@ type Client struct {
 	URL     string
 	Headers map[string]string
 	HTTP    *http.Client
+	// Info initialize 时上报的客户端标识。零值时用 DefaultClientInfo()；
+	// 宿主应用应设置为自己的产品名。
+	Info ClientInfo
 
 	mu        sync.Mutex
 	initMu    sync.Mutex
@@ -60,6 +63,7 @@ func NewClient(url string, headers map[string]string) *Client {
 		URL:     url,
 		Headers: cloneStringMap(headers),
 		HTTP:    &http.Client{},
+		Info:    DefaultClientInfo(),
 	}
 }
 
@@ -117,7 +121,7 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	}
 	rpc, err := readRPCResponse(resp.Body, resp.Header.Get("Content-Type"), reqBody.ID)
 	if err != nil {
-		return fmt.Errorf("MCP %s: 解析响应失败: %w", method, err)
+		return fmt.Errorf("MCP %s: failed to parse response: %w", method, err)
 	}
 	if rpc.Error != nil {
 		return fmt.Errorf("MCP %s: [%d] %s", method, rpc.Error.Code, rpc.Error.Message)
@@ -133,6 +137,15 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	return json.Unmarshal(raw, out)
 }
 
+// clientInfo 返回 initialize 上报的标识；未设置时回退默认值
+// （容忍调用方零值构造 Client 的情况）。
+func (c *Client) clientInfo() ClientInfo {
+	if c.Info.Name != "" {
+		return c.Info
+	}
+	return DefaultClientInfo()
+}
+
 // Initialize 协商协议版本。成功后缓存 server info。
 func (c *Client) Initialize(ctx context.Context) (ServerInfo, error) {
 	var res InitializeResult
@@ -144,7 +157,7 @@ func (c *Client) Initialize(ctx context.Context) (ServerInfo, error) {
 	err := c.call(ctx, "initialize", InitializeParams{
 		ProtocolVersion: ProtocolVersion,
 		Capabilities:    map[string]any{},
-		ClientInfo:      ClientInfo{Name: "ModelBox", Version: "1.0"},
+		ClientInfo:      c.clientInfo(),
 	}, &res)
 	if err != nil {
 		c.resetSession()
@@ -152,7 +165,7 @@ func (c *Client) Initialize(ctx context.Context) (ServerInfo, error) {
 	}
 	if res.ProtocolVersion == "" {
 		c.resetSession()
-		return ServerInfo{}, errors.New("MCP initialize 响应缺少 protocolVersion")
+		return ServerInfo{}, errors.New("MCP initialize response missing protocolVersion")
 	}
 	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
 		c.resetSession()

@@ -10,7 +10,7 @@ import (
 )
 
 // ErrNotFound 文件不存在。调用方据此区分"还没有配置"与"配置损坏"。
-var ErrNotFound = errors.New("配置文件不存在")
+var ErrNotFound = errors.New("config file not found")
 
 // LoadFile 读取 JSON 文件到 v。文件不存在时返回 ErrNotFound。
 func LoadFile(path string, v any) error {
@@ -74,5 +74,5 @@ func Repair(b []byte, v any) error {
 			}
 		}
 	}
-	return fmt.Errorf("无法修复 JSON")
+	return fmt.Errorf("cannot repair JSON")
 }

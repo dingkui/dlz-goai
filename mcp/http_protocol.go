@@ -18,7 +18,7 @@ func readHTTPBody(body io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	if len(data) > maxHTTPResponseBytes {
-		return nil, errors.New("MCP 响应超过 16 MiB 限制")
+		return nil, errors.New("MCP response exceeds the 16 MiB limit")
 	}
 	return data, nil
 }
@@ -26,7 +26,7 @@ func readHTTPBody(body io.Reader) ([]byte, error) {
 func decodeRPCResponse(body []byte, requestID int64) (JSONRPCResponse, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
-		return JSONRPCResponse{}, errors.New("MCP 返回空响应")
+		return JSONRPCResponse{}, errors.New("MCP returned an empty response")
 	}
 	if trimmed[0] == '{' {
 		return parseRPCResponse(trimmed, requestID)
@@ -54,7 +54,7 @@ func decodeRPCResponse(body []byte, requestID int64) (JSONRPCResponse, error) {
 			return response, nil
 		}
 	}
-	return JSONRPCResponse{}, fmt.Errorf("MCP 响应中没有匹配请求 %d 的 JSON-RPC 结果", requestID)
+	return JSONRPCResponse{}, fmt.Errorf("MCP response has no JSON-RPC result matching request %d", requestID)
 }
 
 func parseRPCResponse(payload []byte, requestID int64) (JSONRPCResponse, error) {
@@ -63,10 +63,10 @@ func parseRPCResponse(payload []byte, requestID int64) (JSONRPCResponse, error) 
 		return JSONRPCResponse{}, err
 	}
 	if response.JSONRPC != "2.0" {
-		return JSONRPCResponse{}, errors.New("MCP 响应缺少 jsonrpc 2.0 标识")
+		return JSONRPCResponse{}, errors.New("MCP response missing jsonrpc 2.0 marker")
 	}
 	if response.ID != requestID {
-		return JSONRPCResponse{}, fmt.Errorf("MCP 响应 id 不匹配: got %d, want %d", response.ID, requestID)
+		return JSONRPCResponse{}, fmt.Errorf("MCP response id mismatch: got %d, want %d", response.ID, requestID)
 	}
 	return response, nil
 }

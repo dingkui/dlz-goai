@@ -38,6 +38,9 @@ type StdioClient struct {
 	Command string
 	Args    []string
 	Env     map[string]string
+	// Info initialize 时上报的客户端标识。零值时用 DefaultClientInfo()；
+	// 宿主应用应设置为自己的产品名。
+	Info ClientInfo
 
 	stateMu sync.Mutex
 	writeMu sync.Mutex
@@ -56,6 +59,7 @@ func NewStdioClient(command string, args []string, env map[string]string) *Stdio
 		Command: strings.TrimSpace(command),
 		Args:    append([]string(nil), args...),
 		Env:     cloneStringMap(env),
+		Info:    DefaultClientInfo(),
 		pending: map[int64]chan stdioReply{},
 	}
 }
@@ -67,24 +71,24 @@ func (c *StdioClient) ensureStarted() error {
 		return nil
 	}
 	if c.Command == "" {
-		return errors.New("MCP stdio 启动命令为空")
+		return errors.New("MCP stdio launch command is empty")
 	}
 	cmd := exec.Command(c.Command, c.Args...)
 	cmd.Env = mergedEnv(c.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("创建 MCP stdin 失败: %w", err)
+		return fmt.Errorf("failed to create MCP stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("创建 MCP stdout 失败: %w", err)
+		return fmt.Errorf("failed to create MCP stdout: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("创建 MCP stderr 失败: %w", err)
+		return fmt.Errorf("failed to create MCP stderr: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("启动 MCP 命令失败: %w", err)
+		return fmt.Errorf("failed to start MCP command: %w", err)
 	}
 	c.cmd = cmd
 	c.stdin = stdin
@@ -109,10 +113,10 @@ func (c *StdioClient) readLoop(cmd *exec.Cmd, stdout io.Reader) {
 	}
 	waitErr := cmd.Wait()
 	if scanErr != nil {
-		waitErr = fmt.Errorf("读取 MCP stdout 失败: %w", scanErr)
+		waitErr = fmt.Errorf("failed to read MCP stdout: %w", scanErr)
 	}
 	if waitErr == nil {
-		waitErr = errors.New("MCP stdio 进程已退出")
+		waitErr = errors.New("MCP stdio process exited")
 	}
 	c.finishProcess(cmd, waitErr)
 }
@@ -175,7 +179,7 @@ func (c *StdioClient) call(ctx context.Context, method string, params any, out a
 	c.stateMu.Lock()
 	if c.cmd == nil {
 		c.stateMu.Unlock()
-		return errors.New("MCP stdio 进程未运行")
+		return errors.New("MCP stdio process is not running")
 	}
 	c.id++
 	id := c.id
@@ -203,7 +207,7 @@ func (c *StdioClient) call(ctx context.Context, method string, params any, out a
 			return nil
 		}
 		if err := json.Unmarshal(reply.result, out); err != nil {
-			return fmt.Errorf("MCP %s: 解析响应失败: %w", method, err)
+			return fmt.Errorf("MCP %s: failed to parse response: %w", method, err)
 		}
 		return nil
 	}
@@ -238,12 +242,20 @@ func (c *StdioClient) writeJSON(payload any) error {
 	running := c.cmd != nil
 	c.stateMu.Unlock()
 	if !running || stdin == nil {
-		return errors.New("MCP stdio 进程未运行")
+		return errors.New("MCP stdio process is not running")
 	}
 	if _, err := stdin.Write(encoded); err != nil {
-		return fmt.Errorf("写入 MCP stdin 失败: %w", err)
+		return fmt.Errorf("failed to write MCP stdin: %w", err)
 	}
 	return nil
+}
+
+// stdioClientInfo 返回 initialize 上报的标识；未设置时回退默认值。
+func (c *StdioClient) stdioClientInfo() ClientInfo {
+	if c.Info.Name != "" {
+		return c.Info
+	}
+	return DefaultClientInfo()
 }
 
 func (c *StdioClient) Initialize(ctx context.Context) (ServerInfo, error) {
@@ -256,14 +268,14 @@ func (c *StdioClient) Initialize(ctx context.Context) (ServerInfo, error) {
 	if err := c.call(ctx, "initialize", InitializeParams{
 		ProtocolVersion: ProtocolVersion,
 		Capabilities:    map[string]any{},
-		ClientInfo:      ClientInfo{Name: "ModelBox", Version: "1.0"},
+		ClientInfo:      c.stdioClientInfo(),
 	}, &result); err != nil {
 		_ = c.Close()
 		return ServerInfo{}, err
 	}
 	if result.ProtocolVersion == "" {
 		_ = c.Close()
-		return ServerInfo{}, errors.New("MCP initialize 响应缺少 protocolVersion")
+		return ServerInfo{}, errors.New("MCP initialize response missing protocolVersion")
 	}
 	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
 		_ = c.Close()
@@ -328,7 +340,7 @@ func (c *StdioClient) Close() error {
 		_ = stdin.Close()
 	}
 	for _, waiter := range waiters {
-		waiter <- stdioReply{err: errors.New("MCP stdio 客户端已关闭")}
+		waiter <- stdioReply{err: errors.New("MCP stdio client is closed")}
 	}
 	if cmd == nil || cmd.Process == nil {
 		return nil

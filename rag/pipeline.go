@@ -22,10 +22,10 @@ var _ Retriever = Pipeline{}
 // Retrieve 实现 Retriever。
 func (p Pipeline) Retrieve(ctx context.Context, query string, opts RetrieveOptions) ([]SearchResult, error) {
 	if p.Store == nil && p.FullText == nil {
-		return nil, fmt.Errorf("rag: pipeline 未配置任何 Store")
+		return nil, fmt.Errorf("rag: pipeline has no store configured")
 	}
 	if p.Store != nil && p.Embedder == nil {
-		return nil, fmt.Errorf("rag: 向量检索未配置 Embedder")
+		return nil, fmt.Errorf("rag: vector search requires an Embedder")
 	}
 	topK := opts.TopK
 	if topK <= 0 {
@@ -40,18 +40,18 @@ func (p Pipeline) Retrieve(ctx context.Context, query string, opts RetrieveOptio
 	if p.Store != nil {
 		vec, err := p.Embedder.Embed(ctx, query)
 		if err != nil {
-			return nil, fmt.Errorf("rag: 查询向量化失败: %w", err)
+			return nil, fmt.Errorf("rag: query embedding failed: %w", err)
 		}
 		hits, err := p.Store.Search(ctx, vec, topK, filter)
 		if err != nil {
-			return nil, fmt.Errorf("rag: 向量检索失败: %w", err)
+			return nil, fmt.Errorf("rag: vector search failed: %w", err)
 		}
 		rankings = append(rankings, hits)
 	}
 	if p.FullText != nil {
 		hits, err := p.FullText.Search(ctx, query, topK, filter)
 		if err != nil {
-			return nil, fmt.Errorf("rag: 全文检索失败: %w", err)
+			return nil, fmt.Errorf("rag: full-text search failed: %w", err)
 		}
 		rankings = append(rankings, hits)
 	}
@@ -69,7 +69,7 @@ func (p Pipeline) Retrieve(ctx context.Context, query string, opts RetrieveOptio
 	if p.Reranker != nil && len(merged) > 1 {
 		reranked, err := p.Reranker.Rerank(ctx, query, merged)
 		if err != nil {
-			return nil, fmt.Errorf("rag: 重排失败: %w", err)
+			return nil, fmt.Errorf("rag: rerank failed: %w", err)
 		}
 		merged = reranked
 	}

@@ -207,7 +207,7 @@ func TestResumeInflightNoRetry(t *testing.T) {
 			return nil
 		}
 		last := msgs[len(msgs)-1]
-		if !strings.Contains(last.Content, "恢复提示") {
+		if !strings.Contains(last.Content, "Recovery notice") {
 			t.Fatalf("应收到恢复提示，得到 %q", last.Content)
 		}
 		emit(message.Delta{Content: "已转人工"})
@@ -297,7 +297,7 @@ func TestEventPersistFailClosed(t *testing.T) {
 	_, err := rt.Run(context.Background(),
 		[]message.Message{{Role: message.RoleUser, Content: "问"}},
 		nil, agent.Config{RunID: runID, Tools: []tool.Tool{echoTool()}}, model, nil)
-	if err == nil || !strings.Contains(err.Error(), "持久化失败") {
+	if err == nil || !strings.Contains(err.Error(), "persistence failed") {
 		t.Fatalf("应返回持久化失败错误，得到 %v", err)
 	}
 	rec, _ := rt.Get(context.Background(), runID)

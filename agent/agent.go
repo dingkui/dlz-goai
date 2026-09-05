@@ -29,10 +29,10 @@ const (
 
 // ErrNoTools 保留用于兼容旧调用方。Runner 现在允许空工具集，
 // 此时退化为一次普通流式模型调用并仍产生统一事件。
-var ErrNoTools = errors.New("agent: 当前运行没有可用工具")
+var ErrNoTools = errors.New("agent: no tools available for this run")
 
 // ErrNoModel 未提供模型调用函数。
-var ErrNoModel = errors.New("agent: 未提供模型调用函数")
+var ErrNoModel = errors.New("agent: no model function provided")
 
 // ToolExecution 工具执行模式。
 type ToolExecution string
@@ -368,18 +368,18 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 	sourceID, sourceName := toolSource(targetZero(registry, name))
 	target, ok := registry[name]
 	if !ok {
-		return r.errOutcome(ctx, call, "模型请求了未授权或不存在的工具", step, cfg, emit)
+		return r.errOutcome(ctx, call, "model requested an unknown or unauthorized tool", step, cfg, emit)
 	}
 	arguments, argErr := call.ParseArguments()
 	if argErr != nil {
-		return r.errOutcome(ctx, call, "工具参数不是合法 JSON: "+argErr.Error(), step, cfg, emit)
+		return r.errOutcome(ctx, call, "tool arguments are not valid JSON: "+argErr.Error(), step, cfg, emit)
 	}
 	emit.Emit(Event{Type: EventToolProposed, RunID: cfg.RunID, Step: step,
 		CallID: call.ID, ToolName: name, SourceID: sourceID, SourceName: sourceName, Arguments: arguments})
 
 	switch cfg.policyFor(target) {
 	case tool.PolicyDeny:
-		return r.errOutcome(ctx, call, "工具被当前策略禁止", step, cfg, emit)
+		return r.errOutcome(ctx, call, "tool is denied by policy", step, cfg, emit)
 	case tool.PolicyConfirm:
 		emit.Emit(Event{Type: EventApprovalRequired, RunID: cfg.RunID, Step: step,
 			CallID: call.ID, ToolName: name, SourceID: sourceID, SourceName: sourceName, Arguments: arguments})
@@ -390,7 +390,7 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 				SourceID: sourceID, SourceName: sourceName, Arguments: arguments,
 			})
 			if approvedErr != nil {
-				out := r.errOutcome(ctx, call, "工具审批中断: "+approvedErr.Error(), step, cfg, emit)
+				out := r.errOutcome(ctx, call, "tool approval interrupted: "+approvedErr.Error(), step, cfg, emit)
 				out.abort = approvedErr
 				return out
 			}
@@ -400,7 +400,7 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 		emit.Emit(Event{Type: EventApprovalRequired, RunID: cfg.RunID, Step: step,
 			CallID: call.ID, ToolName: name, Approved: &approvedPtr})
 		if !approved {
-			return r.errOutcome(ctx, call, "用户未批准该工具调用", step, cfg, emit)
+			return r.errOutcome(ctx, call, "tool call was not approved by the user", step, cfg, emit)
 		}
 	}
 
@@ -414,7 +414,7 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 	}
 	text := truncateUTF8(out.Content, maxResultBytes)
 	if text == "" {
-		text = "工具已执行，但没有返回文本内容"
+		text = "tool executed but returned no text content"
 	}
 	eventType := EventToolResult
 	if out.IsError {
@@ -443,7 +443,7 @@ func (r *Runner) errOutcome(ctx context.Context, call tool.Call, reason string,
 	})
 	return callOutcome{toolMessage: message.Message{
 		Role: message.RoleTool, ToolCallID: call.ID, ToolName: call.Function.Name,
-		Content: "错误：" + reason,
+		Content: "error: " + reason,
 	}}
 }
 
@@ -473,7 +473,7 @@ func truncateUTF8(value string, maxBytes int) string {
 	for value != "" && !utf8.ValidString(value) {
 		value = value[:len(value)-1]
 	}
-	return value + "\n\n[工具结果过长，已截断]"
+	return value + "\n\n[tool result truncated: too large]"
 }
 
 func mergeCitations(current, incoming []tool.Citation) []tool.Citation {

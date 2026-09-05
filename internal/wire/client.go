@@ -82,7 +82,7 @@ func Transport() *http.Transport {
 func (c *Client) ChatStream(ctx context.Context, model string, messages []message.Message,
 	opts *message.Options, cb func(message.Delta)) error {
 	if model == "" {
-		return fmt.Errorf("未指定模型")
+		return fmt.Errorf("no model specified")
 	}
 	finalMessages := messages
 	if opts != nil && opts.System != "" {
@@ -134,7 +134,7 @@ func (c *Client) ChatStream(ctx context.Context, model string, messages []messag
 		return nil
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("无可用接口地址")
+		lastErr = fmt.Errorf("no usable endpoint")
 	}
 	return lastErr
 }
@@ -177,7 +177,7 @@ func (c *Client) Ping(ctx context.Context) error {
 		return err
 	}
 	if !done {
-		return fmt.Errorf("端点未返回内容")
+		return fmt.Errorf("endpoint returned no content")
 	}
 	return nil
 }

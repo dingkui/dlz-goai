@@ -68,7 +68,7 @@ func TestTypedToolInvalidArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("参数错误不应作为执行错误: %v", err)
 	}
-	if !out.IsError || !strings.Contains(out.Content, "参数与定义不符") {
+	if !out.IsError || !strings.Contains(out.Content, "do not match the schema") {
 		t.Fatalf("应返回业务错误结果: %+v", out)
 	}
 }
