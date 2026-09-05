@@ -42,7 +42,7 @@ defer db.Close()
 rt := runtime.New(opts)
 ```
 
-下一步：[快速开始](docs/快速开始.md) ｜ [实战案例：接入现有 Go 项目](docs/实战案例-接入现有Go项目.md)（规划中）
+下一步：[快速开始](docs/快速开始.md) ｜ [实战案例：接入现有 Go 项目](docs/实战案例-接入现有Go项目.md)
 
 ## 功能清单
 
@@ -98,10 +98,15 @@ dlz-goai 不做框架：不接管你的代码结构、不要求图编排、依�
 ## 文档
 
 - [快速开始](docs/快速开始.md) — 安装、最小示例、官方示例走读、常见报错
+- [实战案例：接入现有 Go 项目](docs/实战案例-接入现有Go项目.md) — 工单系统九步接入 + 反模式清单（配 [examples/fullstack](examples/fullstack/main.go) 可运行示例）
 - [使用手册：llm](docs/使用手册/llm.md) — 模型调用、多服务配置、流式与用量
 - [使用手册：agent](docs/使用手册/agent.md) — 工具循环、审批、事件流、并行
+- [使用手册：tool](docs/使用手册/tool.md) — 工具契约、类型化工具、Registry、恢复分级
+- [使用手册：mcp](docs/使用手册/mcp.md) — MCP 服务接入、命名空间、生命周期
 - [使用手册：runtime](docs/使用手册/runtime.md) — 持久化运行、断点续跑、事件回放
-- 使用手册 tool / mcp / rag / storage、扩展手册、升级计划 — 编写中
+- [使用手册：rag](docs/使用手册/rag.md) — 分块、向量化、检索管线、知识库工具
+- [使用手册：storage](docs/使用手册/storage.md) — 内存/SQLite 实现选型、自定义 Store
+- 扩展手册、升级计划 — 编写中
 
 ## API 稳定性与路线图
 
