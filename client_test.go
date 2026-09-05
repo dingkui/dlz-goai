@@ -73,8 +73,22 @@ func alwaysApprove() agent.ApprovalHandler {
 // ---- 装配与校验 ----
 
 func TestNewClientRequiresModel(t *testing.T) {
-	if _, err := dlzgoai.NewClient(dlzgoai.Options{}); !errors.Is(err, dlzgoai.ErrNoModel) {
-		t.Fatalf("缺 Model 应返回 ErrNoModel, got %v", err)
+	// Model 可选：省略时 Client 可创建，但 Start 必须逐请求提供 Request.Model
+	c, err := dlzgoai.NewClient(dlzgoai.Options{})
+	if err != nil {
+		t.Fatalf("Model 可省略: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Start(context.Background(), dlzgoai.Request{Input: "问"}); !errors.Is(err, dlzgoai.ErrNoModel) {
+		t.Fatalf("缺 Model 的 Start 应返回 ErrNoModel, got %v", err)
+	}
+	// Request.Model 提供即可运行
+	run, err := c.Start(context.Background(), dlzgoai.Request{Input: "问", Model: plainModel("ok")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := run.Wait(context.Background()); err != nil || result.Content != "ok" {
+		t.Fatalf("Request.Model 应生效: %+v err=%v", result, err)
 	}
 }
 

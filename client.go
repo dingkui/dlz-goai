@@ -46,7 +46,9 @@ var (
 
 // Options Client 装配项。
 type Options struct {
-	// Model 模型调用函数（必填）。通常一行适配内置 provider：
+	// Model 默认模型调用函数。可选：多模型应用（按请求选择模型/服务商）
+	// 可省略，改为在 Request.Model 中逐请求提供；两者都缺时 Start 报 ErrNoModel。
+	// 通常一行适配内置 provider：
 	//
 	//	func(ctx context.Context, msgs []message.Message, opts *message.Options,
 	//		cb func(message.Delta)) error {
@@ -72,6 +74,9 @@ type Request struct {
 	Options *message.Options
 	// Tools 覆盖 Client 默认工具集；nil 时用默认。
 	Tools []tool.Tool
+	// Model 覆盖 Client 默认模型——同一应用按请求选择不同模型/服务商时使用；
+	// nil 时用 Options.Model。
+	Model agent.ModelFunc
 	// 以下透传给 agent.Config，语义见 agent 包。
 	MaxSteps           int
 	ToolTimeout        time.Duration
@@ -131,10 +136,8 @@ type Client struct {
 }
 
 // NewClient 装配并校验。Runtime 未提供时自建内存实现。
+// Model 可省略（改为逐请求在 Request.Model 提供）。
 func NewClient(opts Options) (*Client, error) {
-	if opts.Model == nil {
-		return nil, ErrNoModel
-	}
 	rt := opts.Runtime
 	if rt == nil {
 		rt = runtime.New(runtime.Options{
@@ -161,6 +164,9 @@ func (c *Client) Start(ctx context.Context, req Request) (*Run, error) {
 	msgs, err := req.messages()
 	if err != nil {
 		return nil, err
+	}
+	if req.Model == nil && c.model == nil {
+		return nil, ErrNoModel
 	}
 	_ = ctx // 提交过程当前无阻塞操作；保留参数以稳定签名（未来校验/装配可阻塞）
 	return c.launch(ctx, req, "", msgs)
@@ -199,12 +205,16 @@ func (c *Client) launch(ctx context.Context, req Request, runID string,
 			cancel() // 释放 bgCtx 资源（对已结束运行无副作用）
 			close(st.done)
 		}()
+		model := c.model
+		if req.Model != nil {
+			model = req.Model
+		}
 		var res agent.Result
 		var rerr error
 		if resume {
-			res, rerr = c.rt.Resume(bgCtx, runID, cfg, c.model, nil)
+			res, rerr = c.rt.Resume(bgCtx, runID, cfg, model, nil)
 		} else {
-			res, rerr = c.rt.Run(bgCtx, msgs, req.Options, cfg, c.model, nil)
+			res, rerr = c.rt.Run(bgCtx, msgs, req.Options, cfg, model, nil)
 		}
 		// happens-before：先写结果再关 done，Wait 侧读到关闭即见结果
 		st.result, st.err = res, rerr

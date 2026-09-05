@@ -14,19 +14,13 @@
 
 ## 快速上手
 
-需要 **Go 1.24 或更新版本**。在已有 Go 项目中安装：
+推荐使用 Client：启动时绑定模型与默认工具，之后通过 `Start → Wait` 获取结果。需要 Go 1.24+，先在已有 Go module 中安装：
 
 ```bash
-go get github.com/dingkui/dlz-goai
+go get github.com/dingkui/dlz-goai@v0.1.0
 ```
 
-下面的示例让本地 Ollama 调用一个获取时间的工具，并将模型输出实时打印到终端。先启动 Ollama，再准备模型：
-
-```bash
-ollama pull qwen3:8b
-```
-
-将下面代码保存为 `main.go`，执行 `go run .`：
+启动本地 Ollama，执行 `ollama pull qwen3:8b`，将下列代码保存为 `main.go` 后执行 `go run .`。此示例为普通对话，无需审批：
 
 ```go
 package main
@@ -35,81 +29,44 @@ import (
     "context"
     "fmt"
     "log"
-    "time"
 
-    "github.com/dingkui/dlz-goai/agent"
+    dlzgoai "github.com/dingkui/dlz-goai"
     "github.com/dingkui/dlz-goai/message"
     "github.com/dingkui/dlz-goai/provider/ollama"
-    "github.com/dingkui/dlz-goai/tool"
 )
 
 func main() {
-    provider := ollama.New("") // 默认连接 http://127.0.0.1:11434
-    clock := tool.NewFunc("get_time", "获取当前时间", nil, true,
-        func(context.Context, map[string]any) (tool.Result, error) {
-            return tool.Text(time.Now().Format(time.RFC3339)), nil
-        })
-
-    _, err := agent.New().Run(
-        context.Background(),
-        []message.Message{{Role: message.RoleUser, Content: "请调用工具查询现在的时间。"}},
-        nil,
-        agent.Config{Tools: []tool.Tool{clock}},
-        func(ctx context.Context, msgs []message.Message, opts *message.Options, cb func(message.Delta)) error {
-            return provider.ChatStream(ctx, "qwen3:8b", msgs, opts, cb)
+    provider := ollama.New("")
+    client, err := dlzgoai.NewClient(dlzgoai.Options{
+        Model: func(ctx context.Context, msgs []message.Message, opts *message.Options, emit func(message.Delta)) error {
+            return provider.ChatStream(ctx, "qwen3:8b", msgs, opts, emit)
         },
-        func(e agent.Event) {
-            if e.Type == agent.EventModelDelta {
-                fmt.Print(e.Content)
-            }
-        },
-    )
+    })
     if err != nil {
-        log.Fatal(err)
+        log.Print(err)
+        return
     }
-    fmt.Println()
+    defer client.Close()
+
+    run, err := client.Start(context.Background(), dlzgoai.Request{Input: "用一句话介绍 Go。"})
+    if err != nil {
+        log.Print(err)
+        return
+    }
+    result, err := run.Wait(context.Background())
+    if err != nil {
+        log.Print(err)
+        return
+    }
+    fmt.Println(result.Content)
 }
 ```
 
-运行后可以看到模型根据工具返回的时间作答。接入业务时，将 `get_time` 替换为你的查询或操作函数即可；有副作用的工具可通过审批策略控制执行。
+Client 当前为实验性。默认记录保存在内存；需要持久化时可注入 SQLite Runtime，详见 [Client 手册](docs/使用手册/client.md)。检查点恢复仍在验证中，不作可靠性保证。
 
-使用云端模型时，可换用 `provider/openai`。完整示例见 [本地工具](examples/minimal/main.go)、[MCP 工具](examples/mcp/main.go)、[人工审批](examples/approval/main.go) 和 [完整接入](examples/fullstack/main.go)。
+通过 `Options.Tools` 接入业务函数或 MCP 工具，写操作可通过独立界面提交审批。无需模型服务的完整演示见 [工单实战](docs/实战案例-接入现有Go项目.md)；需要检索知识库时见 [RAG](docs/使用手册/rag.md)。
 
-下一步：[快速开始](docs/快速开始.md) ｜ [实战案例：接入现有 Go 项目](docs/实战案例-接入现有Go项目.md)
-
-## 按需加入持久化与 RAG
-
-需要保存任务状态、回放执行记录时，可以用 `runtime` 包装工具调用循环。SQLite 预设负责装配运行、事件和检查点三个 Store：
-
-```go
-// 使用 storage/sqlite 和 runtime 包；放在返回 error 的初始化函数中。
-db, opts, err := sqlite.OpenRuntime("runs.db")
-if err != nil {
-    return err
-}
-defer db.Close() // 在应用退出、Runtime 使用结束后关闭
-rt := runtime.New(opts)
-// 后续通过 rt.Run / rt.Get / rt.Replay 执行和查询任务。
-```
-
-检查点恢复目前为**实验性能力**，具体行为仍在验证中，不作恢复可靠性保证。接入方式与适用边界见 [runtime 手册](docs/使用手册/runtime.md)。
-
-### 更省事的门面
-
-不想直接操作 runtime 时，根包提供最小 `Client` 门面：装配一次模型、默认工具与存储，之后 `Start` 返回运行句柄，等待、取消、审批、断线续传都有现成方法，无需手工管理运行 goroutine 与事件衔接：
-
-```go
-client, err := dlzgoai.NewClient(dlzgoai.Options{
-    Model: callModel, Tools: tools, Runtime: rt, // Runtime 省略则用内存实现
-})
-run, err := client.Start(ctx, dlzgoai.Request{Input: "把工单 T-1024 指派给 zhang"})
-// 审批等待时：client.Approve(run.ID(), callID, true)
-result, err := run.Wait(ctx)
-```
-
-`Start` 的 ctx 只控制提交，前端断开不会取消运行；重连用 `client.Stream(ctx, runID, afterSeq, emit)` 按 Seq 补齐事件。完整语义见 `client.go` 文档注释与 [实战案例](docs/实战案例-接入现有Go项目.md)。
-
-需要知识库问答时，可独立使用 `rag` 构建检索流程，也可通过 `rag.NewTool` 将检索器接入工具循环，详见 [RAG 手册](docs/使用手册/rag.md)。
+下一步：[快速开始](docs/快速开始.md) ｜ [文档导航](docs/README.md) ｜ [事件与流式集成](docs/指南/事件与流式集成.md)
 
 ## 包与能力
 
@@ -154,8 +111,11 @@ Runtime 默认通过 `agent.Broker` 等待审批，应用收到审批事件后�
 
 ## 文档
 
+- [文档导航](docs/README.md) — 按任务选择阅读路径
+- [Client 手册](docs/使用手册/client.md) — 推荐入口、生命周期与持久化装配
+
 - [快速开始](docs/快速开始.md) — 安装、最小示例、官方示例走读、常见报错
-- [实战案例：接入现有 Go 项目](docs/实战案例-接入现有Go项目.md) — 工单系统九步接入 + 反模式清单（配 [examples/fullstack](examples/fullstack/main.go) 可运行示例）
+- [实战案例：接入现有 Go 项目](docs/实战案例-接入现有Go项目.md) — Client 工单接入与模拟中断演示（配 [examples/fullstack](examples/fullstack/main.go) 可运行示例）
 - [使用手册：llm](docs/使用手册/llm.md) — 模型调用、多服务配置、流式与用量
 - [使用手册：agent](docs/使用手册/agent.md) — 工具循环、审批、事件流、并行
 - [使用手册：tool](docs/使用手册/tool.md) — 工具契约、类型化工具、Registry、恢复分级
@@ -163,7 +123,7 @@ Runtime 默认通过 `agent.Broker` 等待审批，应用收到审批事件后�
 - [使用手册：runtime](docs/使用手册/runtime.md) — 持久化运行、断点续跑、事件回放
 - [使用手册：rag](docs/使用手册/rag.md) — 分块、向量化、检索管线、知识库工具
 - [使用手册：storage](docs/使用手册/storage.md) — 内存/SQLite 实现选型、自定义 Store
-- 扩展手册：[自定义 Provider](docs/扩展手册/自定义Provider.md) ｜ [自定义工具](docs/扩展手册/自定义工具.md) ｜ [自定义存储](docs/扩展手册/自定义存储.md) ｜ [事件与流式集成](docs/扩展手册/事件与流式集成.md) ｜ [错误模型](docs/扩展手册/错误模型.md)
+- 扩展手册：[自定义 Provider](docs/扩展手册/自定义Provider.md) ｜ [自定义工具](docs/扩展手册/自定义工具.md) ｜ [自定义存储](docs/扩展手册/自定义存储.md) ｜ [事件与流式集成](docs/指南/事件与流式集成.md) ｜ [错误模型](docs/指南/错误处理.md)
 - [升级计划](docs/升级计划.md)（版本策略 / API 兼容承诺 / 路线图）· [变更记录](docs/_变更记录.md)
 
 ## API 稳定性与路线图
@@ -176,7 +136,7 @@ Runtime 默认通过 `agent.Broker` 等待审批，应用收到审批事件后�
 路线图（已完成：agent/llm/mcp 第一阶段、runtime、rag+storage/sqlite）：
 
 - [ ] `retrieval/{vector,fulltext,hybrid}` + `rerank/{llm,score}` + `splitter/{text,markdown}` — 拆分检索策略与重排实现；FullTextStore 暂无实现（应用可接 SQLite FTS5）
-- [x] 最小 Client 门面（`Start`/`Wait`/`Approve`/`Resume`/`Stream`/`Close`，见根包 `client.go`）；独立接入示例仍待补
+- [x] 最小 Client 门面（`Start`/`Wait`/`Approve`/`Resume`/`Stream`/`Close`，见根包 `client.go`）；独立接入示例见 examples/client 与 examples/fullstack
 - [ ] `compose` — 等真实应用产生编排需求后再评估（Graph / Workflow）
 
 ## License
