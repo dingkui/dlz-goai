@@ -1,7 +1,9 @@
-// Package dlzgoai 是 dlz-goai 的根文档包，本身不含代码。
+// Package dlzgoai 是 dlz-goai 的根文档包，并提供最小嵌入门面（client.go）。
 //
-// dlz-goai 是一个零第三方依赖的 Go 智能体基础库，提供五块能力：
+// dlzgoai 是一个零第三方依赖的 Go 智能体基础库，提供六块能力：
 //
+//   - Client：最小嵌入门面——装配模型/工具/存储后，Start/Wait/Approve/
+//     Resume/Stream 管理可恢复的 Agent 运行生命周期（见 client.go）
 //   - tool / message：与厂商无关的数据契约（工具定义、对话消息），零依赖
 //   - llm / provider：统一的模型流式调用抽象，内置 OpenAI 兼容与 Ollama 两种实现
 //   - agent：受控的工具调用循环，带步骤上限、超时、结果截断、工具审批
@@ -19,6 +21,7 @@
 //	mcp      ← 零依赖
 //	runtime  ← agent, message, tool
 //	rag      ← tool
+//	Client（本包）← runtime + agent + ...
 //
 // 除 storage/sqlite（modernc.org/sqlite，纯 Go 无 CGO）外全部零第三方依赖；
 // 不 import storage/sqlite 就不会引入该依赖。
