@@ -87,6 +87,11 @@ type Config struct {
 	// 传入当前完整消息轨迹。持久化运行时用它做检查点；
 	// 与 Transform 一样是可选钩子，不设置时行为不变。
 	OnStep func(step int, messages []message.Message)
+	// OnToolDone 每条工具回执消息写入轨迹后调用：step 为当前步，
+	// callIndex 为该步内的调用序号，messages 为已含本条回执的完整轨迹。
+	// 持久化运行时用它实现调用级检查点——崩溃后需要重做的窗口
+	// 由"整步"缩小到"单个工具调用"。可选钩子，不设置时行为不变。
+	OnToolDone func(step, callIndex int, call tool.Call, result message.Message, messages []message.Message)
 	// Transform 每轮调用模型前对上下文做裁剪或改写的可选钩子。
 	// 长对话截断、历史压缩都挂在这里。
 	Transform func(messages []message.Message) []message.Message
@@ -252,12 +257,15 @@ func (r *Runner) Run(ctx context.Context, initial []message.Message, opts *messa
 				}(i)
 			}
 			wg.Wait()
-			for _, out := range outcomes {
+			for i, out := range outcomes {
 				if out.abort != nil {
 					aborted = out.abort
 				}
 				messages = append(messages, out.toolMessage)
 				citations = mergeCitations(citations, out.citations)
+				if cfg.OnToolDone != nil {
+					cfg.OnToolDone(step, i, toolCalls[i], out.toolMessage, messages)
+				}
 			}
 			if aborted != nil {
 				result := usage
@@ -276,6 +284,9 @@ func (r *Runner) Run(ctx context.Context, initial []message.Message, opts *messa
 				}
 				messages = append(messages, out.toolMessage)
 				citations = mergeCitations(citations, out.citations)
+				if cfg.OnToolDone != nil {
+					cfg.OnToolDone(step, i, toolCalls[i], out.toolMessage, messages)
+				}
 			}
 		}
 		if cfg.OnStep != nil {

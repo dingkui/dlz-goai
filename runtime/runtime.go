@@ -3,10 +3,12 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/dingkui/dlz-goai/agent"
 	"github.com/dingkui/dlz-goai/message"
+	"github.com/dingkui/dlz-goai/tool"
 )
 
 // Options 构造 Runtime 的依赖。三个 Store 都是接口注入，
@@ -58,12 +60,13 @@ func New(opts Options) *Runtime {
 // BeginRun 生成一个可持久化的运行标识（复用 agent.Broker 的不可猜测 ID）。
 func (rt *Runtime) BeginRun() string { return rt.broker.Begin() }
 
-// Run 发起一次持久化运行：登记状态、事件落库、每步存检查点、
+// Run 发起一次持久化运行：登记状态、事件落库、调用级存检查点、
 // 审批等待期间置为 WaitingApproval。
 //
-// cfg.RunID 必填（用 BeginRun 生成）；emit 收到的事件与 EventStore
-// 落库内容一致。事件落库失败不中断生成——持久化尽力而为，
-// 强一致需求由实现方在 Store 里保证。
+// cfg.RunID 必填（用 BeginRun() 生成）；emit 收到的事件与 EventStore
+// 落库内容一致。事件或检查点落库失败会中止运行（fail-closed）：
+// 持久化是"恢复不重做已完成步骤"这一承诺的前提，宁可让运行失败，
+// 也不静默丢失记录后假装可以恢复。
 func (rt *Runtime) Run(ctx context.Context, initial []message.Message, opts *message.Options,
 	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter) (agent.Result, error) {
 	return rt.run(ctx, initial, opts, cfg, model, emit, false)
@@ -136,9 +139,21 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 	rt.broker.Bind(runID)
 	rt.setStatus(runID, StatusRunning)
 
+	// 持久化失败即中止（fail-closed）：事件与检查点是恢复语义的前提。
+	// cancel 停止后续生成；首个错误保留为本次运行的最终错误。
+	var persistErr error
+	var persistOnce sync.Once
+	failClosed := func(err error) {
+		persistOnce.Do(func() {
+			persistErr = fmt.Errorf("runtime: 持久化失败，运行已中止: %w", err)
+			cancel()
+		})
+	}
+
 	// 事件包装：落库 + 广播 + 转发
 	// Runner 可并行执行多个工具；局部锁保证 Seq 分配、持久化和对外
 	// 发送保持同一顺序，避免数据库中出现 seq=2 排在 seq=1 前面。
+	// 落库用独立 context：调用方取消的收尾事件（含终态）仍要写进去。
 	var eventMu sync.Mutex
 	wrapped := func(e agent.Event) {
 		eventMu.Lock()
@@ -151,26 +166,45 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 		e.Seq = rt.seqs[runID]
 		rt.mu.Unlock()
 		if rt.events != nil {
-			_ = rt.events.Append(context.Background(), runID, e)
+			if err := rt.events.Append(context.Background(), runID, e); err != nil {
+				failClosed(err)
+			}
 		}
 		rt.broadcast(runID, e)
 		if emit != nil {
 			emit(e)
 		}
 	}
+	if resume {
+		wrapped(agent.Event{Type: agent.EventRunResumed, RunID: runID})
+	}
 
-	// 检查点：每步结束保存消息轨迹（保留调用方自己的 OnStep）
+	// 检查点：调用级（每条工具回执入轨迹即存）+ 步级（整步收尾再存一次）。
+	// 崩溃后需要重做的窗口由"整步"缩小到"单个工具调用"；
+	// 未落库的已完成调用由 Resume 对账（见 resume.go）。
 	if rt.checkpoints != nil {
-		inner := cfg.OnStep
-		cfg.OnStep = func(step int, messages []message.Message) {
-			_ = rt.checkpoints.Save(runCtx, Checkpoint{
-				RunID: runID, Step: step,
+		saveCheckpoint := func(step, callIndex int, messages []message.Message) {
+			if err := rt.checkpoints.Save(context.Background(), Checkpoint{
+				RunID: runID, Step: step, CallIndex: callIndex,
 				Messages: append([]message.Message(nil), messages...),
 				Options:  opts, CreatedAt: now(),
-			})
+			}); err != nil {
+				failClosed(err)
+			}
+		}
+		innerStep := cfg.OnStep
+		cfg.OnStep = func(step int, messages []message.Message) {
+			saveCheckpoint(step, -1, messages)
 			rt.updateRecord(runID, func(r *RunRecord) { r.LastStep = step })
-			if inner != nil {
-				inner(step, messages)
+			if innerStep != nil {
+				innerStep(step, messages)
+			}
+		}
+		innerCall := cfg.OnToolDone
+		cfg.OnToolDone = func(step, callIndex int, call tool.Call, result message.Message, messages []message.Message) {
+			saveCheckpoint(step, callIndex, messages)
+			if innerCall != nil {
+				innerCall(step, callIndex, call, result, messages)
 			}
 		}
 	}
@@ -198,7 +232,9 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 
 	result, err := rt.runner.Run(runCtx, initial, opts, cfg, model, wrapped)
 
-	// 终态判定：context 取消 → canceled；其余错误 → failed
+	// 终态判定：取消 → canceled；其余错误 → failed；
+	// 持久化失败优先呈现（fail-closed 的本意就是让故障可见，
+	// 即使取消路径上发生的落库失败也按 failed 记录原因）。
 	final := StatusSucceeded
 	errText := ""
 	if err != nil {
@@ -208,6 +244,11 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 			final = StatusCanceled
 			errText = "已取消"
 		}
+	}
+	if persistErr != nil {
+		err = persistErr
+		final = StatusFailed
+		errText = persistErr.Error()
 	}
 	rt.updateRecord(runID, func(r *RunRecord) {
 		r.Status = final
@@ -234,6 +275,10 @@ func (rt *Runtime) ApprovalHandler(runID string) agent.ApprovalHandler {
 // Resume 从最近检查点继续一次运行。工具集由调用方重新提供
 // （检查点只保存"发生了什么"，不保存"能做什么"）；
 // 恢复后引用从续跑点重新累积，历史引用可从 EventStore 回放。
+//
+// 恢复对账：检查点之后、事件库中已执行且有结果记录的调用，在模型
+// 重新发起同样调用时直接复用结果、不重复执行；已开始执行但无结果
+// 记录的调用按工具的 RetryPolicy 分级（见 resume.go）。
 func (rt *Runtime) Resume(ctx context.Context, runID string,
 	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter) (agent.Result, error) {
 
@@ -261,6 +306,19 @@ func (rt *Runtime) Resume(ctx context.Context, runID string,
 		return agent.Result{}, err
 	}
 	cfg.RunID = runID
+	if len(cfg.Tools) > 0 {
+		idx, idxErr := rt.buildResumeIndex(ctx, runID, cp.Messages)
+		if idxErr != nil {
+			return agent.Result{}, idxErr
+		}
+		if !idx.empty() {
+			tools := make([]tool.Tool, len(cfg.Tools))
+			for i, t := range cfg.Tools {
+				tools[i] = &resumeTool{Tool: t, idx: idx}
+			}
+			cfg.Tools = tools
+		}
+	}
 	return rt.run(ctx, cp.Messages, cp.Options, cfg, model, emit, true)
 }
 

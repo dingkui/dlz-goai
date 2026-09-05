@@ -14,6 +14,9 @@ import (
 type Checkpoint struct {
 	RunID     string           `json:"runId"`
 	Step      int              `json:"step"`
+	// CallIndex 该检查点保存时机所处步内的调用序号（调用级检查点）；
+	// -1 或缺省表示步级检查点（整步结束）。
+	CallIndex int              `json:"callIndex,omitempty"`
 	Messages  []message.Message `json:"messages"`
 	Citations []tool.Citation  `json:"citations,omitempty"`
 	Options   *message.Options `json:"options,omitempty"`

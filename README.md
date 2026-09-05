@@ -10,7 +10,7 @@
 
 | 包 | 职责 | 依赖 |
 |---|---|---|
-| `tool` | 工具契约：定义、调用、结果、注册表、策略、类型化工具 | 无 |
+| `tool` | 工具契约：定义、调用、结果、注册表、策略、类型化工具、恢复分级（RetryPolicy） | 无 |
 | `message` | 对话数据契约：消息、增量、选项 | `tool` |
 | `llm` | 模型能力接口 + 服务配置（不含任何实现） | `message` `tool` |
 | `factory` | 可选：按配置构造内置 Provider | `llm` + 各 provider |
@@ -18,11 +18,11 @@
 | `provider/ollama` | Ollama 原生接口（含用量统计） | `internal/wire` |
 | `agent` | 工具调用循环：步骤上限、超时、截断、审批、事件流、并行执行 | `message` `tool` |
 | `mcp` | **MCP Tool Client / Adapter**（stdio + Streamable HTTP） | 无 |
-| `runtime` | 持久化运行：状态登记、事件落库、步级检查点、断点续跑、回放与订阅 | `agent` `message` `tool` |
+| `runtime` | 持久化运行：状态登记、事件落库、调用级检查点、断点续跑（含事件对账：不重做已完成的调用）、回放与订阅 | `agent` `message` `tool` |
 | `rag` | 检索增强：分块、Embedder/VectorStore/Retriever/Reranker 接口、RRF 融合、Pipeline、Retriever→Tool 适配 | `tool` |
 | `embedding/ollama` `embedding/openai` | 双厂商 Embedder 实现 | `rag` |
 | `storage/memory` | 内存 VectorStore（暴力余弦，开发/测试用） | `rag` |
-| `storage/sqlite` | SQLite 持久实现：rag.VectorStore + runtime 三 Store | `rag` `runtime` + sqlite |
+| `storage/sqlite` | SQLite 持久实现：rag.VectorStore + runtime 三 Store（`sqlite.OpenRuntime` 一行装配开箱恢复预设），WAL 模式 | `rag` `runtime` + sqlite |
 
 依赖严格单向：`llm` 不 import 任何 provider；`agent` 只认 `tool.Tool`；`mcp` 可单独使用；`runtime` 依赖 `agent`；`rag` 只依赖 `tool`（不依赖 agent，可独立用，也可经 `rag.NewTool` 包成工具接入 agent）。
 
@@ -128,6 +128,24 @@ defer cancel()
 ```
 
 关键边界：**工具集是运行时对象、不可序列化**，所以 Resume 时工具由调用方重新提供——检查点保存"发生了什么"，不保存"能做什么"。
+
+恢复语义（调用级检查点 + 事件对账）：
+
+- 每条工具回执写入轨迹后立即存检查点，事件随发生落库——崩溃后需要重做的窗口缩小到**单个工具调用**；
+- Resume 时与事件库对账：已执行且有结果记录、但未被检查点覆盖的调用，在模型重新发起同样调用时**直接复用结果，不重复执行**；
+- 已开始执行但没有结果记录的调用（副作用可能已发生），按工具的 `tool.RetryPolicy` 分级：`RetrySafe` 重新执行（默认），`NeedsVerify`/`NoRetry` 返回提示、让模型先核实外部状态或转人工；
+- 事件/检查点落库失败会**中止运行**（fail-closed）：持久化是恢复承诺的前提，宁可失败也不静默丢记录。
+
+> 外部副作用恰好一次需要工具与业务系统配合（如幂等键），本库不承诺；
+> 首版为单进程模型，多实例并发恢复需外部协调。
+
+开箱即用的持久化恢复（默认内存实现不跨进程，需要重启后恢复时）：
+
+```go
+db, opts, err := sqlite.OpenRuntime("runs.db") // 一行装配三 Store
+defer db.Close()
+rt := runtime.New(opts)
+```
 
 ## rag 用法
 

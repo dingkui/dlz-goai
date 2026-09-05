@@ -25,6 +25,8 @@ const (
 	EventStepDone = "step_done"
 	// EventFinal 运行结束，Content 为最终回答。
 	EventFinal = "final"
+	// EventRunResumed Runtime 从检查点恢复一次运行（同 RunID 续跑）。
+	EventRunResumed = "run_resumed"
 	// EventRunDone Runtime 已完成状态与事件持久化。
 	EventRunDone = "run_done"
 	// EventRunError Runtime 运行失败；Error 为失败原因。

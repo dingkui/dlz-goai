@@ -1,8 +1,16 @@
 // Package runtime 在 agent.Runner 之上提供持久化运行：
-// 状态登记、事件落库、步级检查点、断点续跑、事件回放与订阅。
+// 状态登记、事件落库、调用级检查点、断点续跑（含事件对账）、
+// 事件回放与订阅。
 //
 // 存储全部走接口注入（RunStore/EventStore/CheckpointStore），
 // 本包自带内存实现（runtime/memory），SQLite 等持久实现由调用方提供。
+//
+// 恢复语义：已确认完成的调用不重复执行（事件对账复用）；
+// 已开始执行但结果未记录的调用按工具的 tool.RetryPolicy 分级处理。
+// 外部副作用的恰好一次需要工具与业务系统配合，本库不承诺。
+//
+// 首版为单进程模型：多实例并发恢复同一 RunID 需外部协调（租约/执行权），
+// 本库不提供。
 //
 // 依赖方向：runtime → agent + message + tool，不反向依赖任何应用。
 package runtime
