@@ -10,7 +10,6 @@ import (
 	"time"
 
 	dlzgoai "github.com/dingkui/dlz-goai"
-	"github.com/dingkui/dlz-goai/agent"
 	"github.com/dingkui/dlz-goai/message"
 	"github.com/dingkui/dlz-goai/runtime"
 	"github.com/dingkui/dlz-goai/tool"
@@ -48,15 +47,14 @@ func waitApproval(ctx context.Context, client *dlzgoai.Client, id string) (*runt
 	defer ticker.Stop()
 	for {
 		rec, err := client.GetRun(ctx, id)
-		if err != nil && !errors.Is(err, runtime.ErrRunNotFound) {
+		if err != nil {
 			return nil, err
 		}
 		if err == nil {
 			if rec.Status == runtime.StatusWaitingApproval && rec.PendingApproval != nil {
 				return rec.PendingApproval, nil
 			}
-			// Resume registers asynchronously; the previous canceled attempt may still be visible.
-			if rec.Status.Terminal() && rec.Status != runtime.StatusCanceled {
+			if rec.Status.Terminal() {
 				return nil, fmt.Errorf("run ended before approval: %s %s", rec.Status, rec.Error)
 			}
 		}
@@ -111,17 +109,7 @@ func demo() error {
 	}
 	// Simulate a user decision. Production code authenticates and authorizes
 	// the approver at a separate endpoint, rather than automatically approving.
-	for {
-		err = client.Approve(resumed.ID(), pending.CallID, true)
-		if !errors.Is(err, agent.ErrApprovalNotPending) {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
+	err = client.Approve(resumed.ID(), pending.CallID, true)
 	if err != nil {
 		return err
 	}
