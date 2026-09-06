@@ -34,9 +34,10 @@ import (
 
 // 门面层错误。
 var (
-	// ErrNoModel NewClient 未提供模型调用函数。
+	// ErrResumeConfigRequired 缓存与解析器均无法提供原运行配置。
 	ErrResumeConfigRequired = errors.New("dlzgoai: resume requires original configuration; use ResumeWith or ResumeResolver")
-	ErrNoModel              = errors.New("dlzgoai: model is required")
+	// ErrNoModel Start/ResumeWith 未提供所需的模型调用函数。
+	ErrNoModel = errors.New("dlzgoai: model is required")
 	// ErrClientClosed Client 已 Close，不能再发起运行。
 	ErrClientClosed = errors.New("dlzgoai: client is closed")
 	// ErrNoInput Request 既没有 Messages 也没有 Input。
@@ -61,8 +62,8 @@ type Options struct {
 	//		return provider.ChatStream(ctx, "qwen3:8b", msgs, opts, cb)
 	//	}
 	Model agent.ModelFunc
-	// Tools 默认工具集：Start 未显式指定、以及 Resume 续跑时使用。
-	// Client 持有工具集正是为了免去应用在 Resume 时手工重提供。
+	// Tools 默认工具集：Start 未显式指定时使用。
+	// 同进程 Resume 使用原请求快照，跨进程需显式重建配置。
 	Tools []tool.Tool
 	// Runtime 持久化运行时。nil 时自建内存实现（开发调试用，不跨进程）；
 	// 需要"重启后恢复"请用 sqlite.OpenRuntime 装配后传入。
@@ -180,7 +181,7 @@ func NewClient(opts Options) (*Client, error) {
 func (c *Client) Runtime() *runtime.Runtime { return c.rt }
 
 // Start 发起一次运行并在登记就绪后返回句柄；执行在 Client 管理的后台 goroutine 中。
-// ctx 只控制提交过程。错误在 Wait 中呈现（持久化失败、模型失败等——
+// ctx 控制提交过程，准备失败直接返回；后续执行错误在 Wait 中呈现（
 // 见 runtime 的 fail-closed 语义）。
 func (c *Client) Start(ctx context.Context, req Request) (*Run, error) {
 	msgs, err := req.messages()
@@ -471,7 +472,7 @@ func (c *Client) ActiveRuns() []string {
 
 // Close 取消全部活跃运行并等待其退出，释放受管运行缓存。
 // 幂等；不关闭应用注入的 Runtime / 模型资源（所有权归应用）。
-// Close 后 Start/Resume 返回 ErrClientClosed，Wait/Cancel 返回 ErrRunNotManaged。
+// Close 后 Start/Resume 返回 ErrClientClosed，Client.Wait 返回 ErrRunNotManaged，Cancel 返回 false。
 func (c *Client) Close() error {
 	c.once.Do(func() {
 		c.mu.Lock()
