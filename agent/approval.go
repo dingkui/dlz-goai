@@ -46,6 +46,35 @@ func (f ApprovalFunc) Request(ctx context.Context, req ApprovalRequest) (bool, e
 	return f(ctx, req)
 }
 
+// ReadyApprovalHandler registers its waiter before notifying external consumers.
+type ReadyApprovalHandler interface {
+	ApprovalHandler
+	RequestReady(context.Context, ApprovalRequest, func() error) (bool, error)
+}
+
+type ReadyApprovalFunc func(context.Context, ApprovalRequest, func() error) (bool, error)
+
+func (f ReadyApprovalFunc) Request(ctx context.Context, req ApprovalRequest) (bool, error) {
+	return f(ctx, req, func() error { return nil })
+}
+func (f ReadyApprovalFunc) RequestReady(ctx context.Context, req ApprovalRequest, ready func() error) (bool, error) {
+	return f(ctx, req, ready)
+}
+
+// RequestApproval supports prepared waiters and legacy synchronous handlers.
+func RequestApproval(ctx context.Context, h ApprovalHandler, req ApprovalRequest, ready func() error) (bool, error) {
+	if prepared, ok := h.(ReadyApprovalHandler); ok {
+		return prepared.RequestReady(ctx, req, ready)
+	}
+	if err := ready(); err != nil {
+		return false, err
+	}
+	if h == nil {
+		return false, nil
+	}
+	return h.Request(ctx, req)
+}
+
 // AutoApprove 全部放行。用于工具都是只读、或运行在可信环境中的场景。
 func AutoApprove() ApprovalHandler {
 	return ApprovalFunc(func(context.Context, ApprovalRequest) (bool, error) { return true, nil })
@@ -118,13 +147,17 @@ func (b *Broker) End(runID string) {
 
 // For 返回绑定到某次运行的审批器，交给 Runner 使用。
 func (b *Broker) For(runID string) ApprovalHandler {
-	return ApprovalFunc(func(ctx context.Context, req ApprovalRequest) (bool, error) {
-		return b.Wait(ctx, runID, req)
+	return ReadyApprovalFunc(func(ctx context.Context, req ApprovalRequest, ready func() error) (bool, error) {
+		return b.waitReady(ctx, runID, req, ready)
 	})
 }
 
 // Wait 阻塞直到该调用被批准、被拒绝，或运行结束。
 func (b *Broker) Wait(ctx context.Context, runID string, req ApprovalRequest) (bool, error) {
+	return b.waitReady(ctx, runID, req, func() error { return nil })
+}
+
+func (b *Broker) waitReady(ctx context.Context, runID string, req ApprovalRequest, ready func() error) (bool, error) {
 	decision := make(chan bool, 1)
 
 	b.mu.Lock()
@@ -150,6 +183,9 @@ func (b *Broker) Wait(ctx context.Context, runID string, req ApprovalRequest) (b
 		b.mu.Unlock()
 	}()
 
+	if err := ready(); err != nil {
+		return false, err
+	}
 	select {
 	case approved, open := <-decision:
 		if !open {

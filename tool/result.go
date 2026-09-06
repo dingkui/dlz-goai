@@ -22,7 +22,8 @@ type Citation struct {
 // IsError 与 error 的区分：error 表示执行本身失败（连接超时、进程崩溃），
 // IsError 表示工具成功执行但业务上失败（参数不合法、记录不存在）。
 // 后者要把原因写进 Content 交回模型，这样模型有机会自我纠正，
-// 而 error 只会终止当前步骤。
+// 当前 Agent 会将 Execute 返回的 error 也转换为模型可见工具回执；
+// 它本身不导致整个运行立即终止。
 type Result struct {
 	Content   string
 	IsError   bool

@@ -91,6 +91,6 @@ vec := rag.DecodeVec(blob)             // 二进制 → 向量
 | `VectorStore` | 存储 + 相似度检索（同 DocID 覆盖、Score 降序） | `storage/memory`、`storage/sqlite` |
 | `FullTextStore` | 关键词检索通道 | 暂无（可接 SQLite FTS5） |
 | `Retriever` | 查询 → 命中（Pipeline 实现了它） | 自定义混合策略 |
-| `Reranker` | 二次排序 | 暂无（LLM 打分型参考 mdk 的实现思路：并发打分、单条失败不丢结果） |
+| `Reranker` | 二次排序 | 暂无（应用按需求实现） |
 
-已知边界：向量检索为暴力余弦，无 ANN 索引——数万 chunk 量级内延迟可接受，更大规模建议接专用向量库实现 `VectorStore`。切换 Embedder 模型时注意维度匹配（旧向量需重建）。
+已知边界：向量检索为暴力余弦，无 ANN 索引——性能取决于向量维度、条数和并发量，需按实际数据测试；必要时接专用向量库实现 VectorStore。切换 Embedder 模型时注意维度匹配（旧向量需重建）。

@@ -46,7 +46,7 @@ type Config struct {
 	MaxSteps           int                // 步骤上限；0 用默认 6，硬上限 20
 	ToolTimeout        time.Duration      // 单工具超时；0 用默认 45s
 	MaxToolResultBytes int                // 单结果截断阈值；0 用默认 128KB
-	Approve            ApprovalHandler    // 审批器；nil 时非只读工具一律拒绝
+	Approve            ApprovalHandler    // 审批器；confirm 策略且 nil 时拒绝
 	ToolExecution      ToolExecution      // 默认串行；ToolParallel 并行
 	OnStep             func(step int, messages []message.Message)
 	OnToolDone         func(step, callIndex int, call tool.Call, result message.Message, messages []message.Message)
@@ -74,9 +74,9 @@ callModel := func(ctx context.Context, msgs []message.Message, opts *message.Opt
 | 通道 | 写法 | 行为 |
 |---|---|---|
 | 业务失败 | `return tool.Error("记录不存在"), nil` | 原因写进 tool 消息**回传模型**，给它自我纠正的机会 |
-| 执行失败 | `return tool.Result{}, err` | 终止当前步骤，错误上抛给调用方 |
+| 执行失败 | `return tool.Result{}, err` | 转换为工具错误回执交回模型，循环可继续 |
 
-判断标准：模型还能为这个失败做什么吗？能（换个参数重试）→ 业务失败；不能（进程崩了）→ error。
+当前 Agent 会将这两种工具失败都交回模型。真正导致运行结束的错误见 [错误处理](../指南/错误处理.md)。
 
 参数解析失败、模型请求未注册的工具、策略禁止、用户拒绝——都走业务失败通道回传模型。
 
@@ -101,8 +101,8 @@ broker.Resolve(runID, callID, true)
 
 规则：
 
-- `Approve == nil` 时，非只读工具**一律拒绝**——宁可不做，也不在未确认的情况下执行危险操作。
-- 审批等待被中断（ctx 取消、运行结束）返回错误并中止该调用；运行结束时 Broker 会关闭全部等待，不泄漏 goroutine。
+- 裸 Agent 在 confirm 策略且 Approve 为 nil 时拒绝；显式 auto/deny 优先。Client/Runtime 默认绑定 Broker 等待审批。
+- 审批等待被中断（ctx 取消、运行结束）返回错误并中止该调用；裸 Agent 使用者需在运行结束时调用 broker.End(runID)；Runtime 管理其 Broker 生命周期。
 - 每次决策通过 `EventApprovalRequired` 事件推送（含 `Approved *bool` 字段标注决议结果）。
 
 ## 事件流
@@ -135,7 +135,7 @@ agent.Config{Tools: tools, ToolExecution: agent.ToolParallel}
 ## 三层防线
 
 1. **步数上限**：`MaxSteps`（默认 6，硬上限 20）防死循环；用尽后去工具兜底总结。
-2. **单工具超时**：`ToolTimeout`（默认 45s），超时按执行失败处理。
+2. **单工具超时**：`ToolTimeout`（默认 45s），通过 ctx 传递超时；工具必须响应 ctx，不会强制终止忽略取消的函数。
 3. **结果截断**：单结果超过 `MaxToolResultBytes`（默认 128KB）按 UTF-8 安全边界截断并标注——直接按字节切会产生非法 UTF-8，让整个请求被服务端拒绝。
 
 **中断韧性**：用户停止、连接断开时，已流出的正文保留在 `Result.Messages` 轨迹里——界面上显示过的文字不丢失。

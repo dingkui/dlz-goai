@@ -172,6 +172,10 @@ func (r *Runner) Run(ctx context.Context, initial []message.Message, opts *messa
 	emit.Emit(Event{Type: EventRunStart, RunID: cfg.RunID, Step: 0})
 
 	for step := 1; step <= maxSteps; step++ {
+		if err := ctx.Err(); err != nil {
+			usage.Messages = messages
+			return usage, err
+		}
 		var content strings.Builder
 		calls := newCallAccumulator(step)
 		finishReason := ""
@@ -381,13 +385,15 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 	case tool.PolicyDeny:
 		return r.errOutcome(ctx, call, "tool is denied by policy", step, cfg, emit)
 	case tool.PolicyConfirm:
-		emit.Emit(Event{Type: EventApprovalRequired, RunID: cfg.RunID, Step: step,
-			CallID: call.ID, ToolName: name, SourceID: sourceID, SourceName: sourceName, Arguments: arguments})
 		approved := false
-		if cfg.Approve != nil {
-			decision, approvedErr := cfg.Approve.Request(ctx, ApprovalRequest{
+		{
+			decision, approvedErr := RequestApproval(ctx, cfg.Approve, ApprovalRequest{
 				Step: step, CallID: call.ID, ToolName: name,
 				SourceID: sourceID, SourceName: sourceName, Arguments: arguments,
+			}, func() error {
+				emit.Emit(Event{Type: EventApprovalRequired, RunID: cfg.RunID, Step: step,
+					CallID: call.ID, ToolName: name, SourceID: sourceID, SourceName: sourceName, Arguments: arguments})
+				return ctx.Err()
 			})
 			if approvedErr != nil {
 				out := r.errOutcome(ctx, call, "tool approval interrupted: "+approvedErr.Error(), step, cfg, emit)
@@ -406,6 +412,9 @@ func (r *Runner) execCall(ctx context.Context, step int, call tool.Call,
 
 	emit.Emit(Event{Type: EventToolStarted, RunID: cfg.RunID, Step: step,
 		CallID: call.ID, ToolName: name, SourceID: sourceID, SourceName: sourceName, Arguments: arguments})
+	if err := ctx.Err(); err != nil {
+		return callOutcome{abort: err}
+	}
 	toolCtx, cancel := context.WithTimeout(ctx, toolTimeout)
 	out, callErr := target.Execute(toolCtx, arguments)
 	cancel()

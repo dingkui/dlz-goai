@@ -14,10 +14,10 @@
 
 ## 快速上手
 
-推荐使用 Client：启动时绑定模型与默认工具，之后通过 `Start → Wait` 获取结果。需要 Go 1.24+，先在已有 Go module 中安装：
+推荐使用 Client：启动时绑定模型与默认工具，之后通过 `Start → Wait` 获取结果。需要 Go 1.24+，先在已有 Go module 中安装当前开发版本（Go 会记录具体提交的伪版本）：
 
 ```bash
-go get github.com/dingkui/dlz-goai@v0.1.0
+go get github.com/dingkui/dlz-goai@master
 ```
 
 启动本地 Ollama，执行 `ollama pull qwen3:8b`，将下列代码保存为 `main.go` 后执行 `go run .`。此示例为普通对话，无需审批：
@@ -123,7 +123,8 @@ Runtime 默认通过 `agent.Broker` 等待审批，应用收到审批事件后�
 - [使用手册：runtime](docs/使用手册/runtime.md) — 持久化运行、断点续跑、事件回放
 - [使用手册：rag](docs/使用手册/rag.md) — 分块、向量化、检索管线、知识库工具
 - [使用手册：storage](docs/使用手册/storage.md) — 内存/SQLite 实现选型、自定义 Store
-- 扩展手册：[自定义 Provider](docs/扩展手册/自定义Provider.md) ｜ [自定义工具](docs/扩展手册/自定义工具.md) ｜ [自定义存储](docs/扩展手册/自定义存储.md) ｜ [事件与流式集成](docs/指南/事件与流式集成.md) ｜ [错误模型](docs/指南/错误处理.md)
+- 扩展手册：[自定义 Provider](docs/扩展手册/自定义Provider.md) ｜ [自定义工具](docs/扩展手册/自定义工具.md) ｜ [自定义存储](docs/扩展手册/自定义存储.md)
+- 接入指南：[事件与流式集成](docs/指南/事件与流式集成.md) ｜ [错误处理](docs/指南/错误处理.md)
 - [升级计划](docs/升级计划.md)（版本策略 / API 兼容承诺 / 路线图）· [变更记录](docs/_变更记录.md)
 
 ## API 稳定性与路线图
@@ -142,3 +143,5 @@ Runtime 默认通过 `agent.Broker` 等待审批，应用收到审批事件后�
 ## License
 
 MIT
+
+HTTP 接入示例见 [examples/http](examples/http/README.md)：无需 API Key，可验证提交、审批、取消、恢复和 SSE 重连。

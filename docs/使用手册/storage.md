@@ -4,7 +4,7 @@
 
 | 实现 | 适用 | 依赖 |
 |---|---|---|
-| `storage/memory` | 开发调试、单元测试、不需要跨进程恢复 | 无（纯内存） |
+| `runtime/memory` / `storage/memory` | 分别为运行 Store 与向量 Store，适合开发调试 | 无（纯内存） |
 | `storage/sqlite` | 持久化：断点续跑、事件回放、向量检索落库 | modernc.org/sqlite（纯 Go，无 CGO，本库唯一第三方依赖） |
 
 不 import storage/sqlite 就不会引入该依赖——核心包保持零第三方依赖。
@@ -69,8 +69,8 @@ err = store.Remove(ctx, docID) // 删除整篇
 - **临时运行 / 测试**：`runtime/memory` 全套，进程退出即消失；
 - **需要断点续跑**：`sqlite.OpenRuntime(path)`；
 - **已有 SQLite 主库**：`sqlite.Open`（新文件）或 `sqlite.Migrate(db)`（复用连接）后按需构造单个 Store；
-- **知识库向量检索**：数据量在数万 chunk 内用 `sqlite.NewVectorStore`（暴力余弦）；更大规模实现 `rag.VectorStore` 接专用向量库；
-- **多进程共享同一 SQLite 文件**：读写可以（WAL），但 runtime 的恢复模型是单进程的——多实例并发恢复同一 RunID 需外部协调，见 [runtime 手册](使用手册/runtime.md)。
+- **知识库向量检索**：可用 sqlite.NewVectorStore 起步；按向量维度、条数和并发量实测延迟，必要时通过 rag.VectorStore 接专用向量库；
+- **多进程共享同一 SQLite 文件**：读写可以（WAL），但 runtime 的恢复模型是单进程的——多实例并发恢复同一 RunID 需外部协调，见 [runtime 手册](runtime.md)。
 
 ## 实现自定义 Store
 

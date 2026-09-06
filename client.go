@@ -7,7 +7,7 @@
 // 阶段一的最小实现——Config/Registry/Preset 全体系等真实需求出现后再评估。
 //
 // 语义要点：
-//   - Start/Resume 立即返回 Run 句柄，执行在 Client 管理的后台 goroutine 中；
+//   - Start/Resume 在运行登记就绪后返回 Run 句柄，执行在 Client 管理的后台 goroutine 中；
 //     调用方 ctx 只控制提交过程，不影响运行本身（前端断开 ≠ 取消）；
 //   - Wait 的 ctx 取消只停止等待，不取消运行；取消用 Cancel；
 //   - 审批经 Client.Approve 在任意 HTTP 请求中提交，与事件流解耦；
@@ -21,6 +21,7 @@ package dlzgoai
 import (
 	"context"
 	"errors"
+	"maps"
 	"sync"
 	"time"
 
@@ -34,7 +35,8 @@ import (
 // 门面层错误。
 var (
 	// ErrNoModel NewClient 未提供模型调用函数。
-	ErrNoModel = errors.New("dlzgoai: model is required")
+	ErrResumeConfigRequired = errors.New("dlzgoai: resume requires original configuration; use ResumeWith or ResumeResolver")
+	ErrNoModel              = errors.New("dlzgoai: model is required")
 	// ErrClientClosed Client 已 Close，不能再发起运行。
 	ErrClientClosed = errors.New("dlzgoai: client is closed")
 	// ErrNoInput Request 既没有 Messages 也没有 Input。
@@ -46,6 +48,10 @@ var (
 
 // Options Client 装配项。
 type Options struct {
+	// ResumeResolver reconstructs trusted configuration after restart or cache eviction.
+	ResumeResolver func(context.Context, string) (Request, error)
+	// MaxCompletedRuns bounds cached results. Zero uses 128; negative disables caching.
+	MaxCompletedRuns int
 	// Model 默认模型调用函数。可选：多模型应用（按请求选择模型/服务商）
 	// 可省略，改为在 Request.Model 中逐请求提供；两者都缺时 Start 报 ErrNoModel。
 	// 通常一行适配内置 provider：
@@ -66,6 +72,8 @@ type Options struct {
 
 // Request 一次运行请求。
 type Request struct {
+	// RunID optionally supplies a unique application-owned ID, allowing configuration to be saved before submission.
+	RunID string
 	// Input 便捷输入：非空时作为单条 user 消息（Messages 非空时忽略本字段）。
 	Input string
 	// Messages 完整输入（多轮、带图片、含 system 等）。
@@ -87,18 +95,19 @@ type Request struct {
 
 // Run 一次运行的生命周期句柄。轻量值，可安全跨 goroutine 传递。
 type Run struct {
-	id string
-	c  *Client
+	id    string
+	c     *Client
+	state *runState
 }
 
 // ID 运行标识（持久化、跨进程重连时使用）。
 func (r *Run) ID() string { return r.id }
 
 // Wait 等待运行结束（见 Client.Wait）。
-func (r *Run) Wait(ctx context.Context) (agent.Result, error) { return r.c.Wait(ctx, r.id) }
+func (r *Run) Wait(ctx context.Context) (agent.Result, error) { return waitState(ctx, r.state) }
 
 // Cancel 取消运行（见 Client.Cancel）。
-func (r *Run) Cancel() bool { return r.c.Cancel(r.id) }
+func (r *Run) Cancel() bool { return cancelState(r.state) }
 
 // Approve 提交本运行的一次审批决策（见 Client.Approve）。
 func (r *Run) Approve(callID string, approved bool) error {
@@ -114,20 +123,25 @@ func (r *Run) Stream(ctx context.Context, afterSeq int64, emit agent.Emitter) er
 func (r *Run) Get(ctx context.Context) (runtime.RunRecord, error) { return r.c.GetRun(ctx, r.id) }
 
 // runState 一次受管运行的内部状态。
-// 完成后保留在 Client 中（缓存最终结果供 Wait 迟到调用），Close 时统一释放。
+// 完成后按缓存上限保留，Run 句柄独立持有自身执行结果。
 type runState struct {
-	done   chan struct{}      // 运行结束（含结果写入）后关闭
-	cancel context.CancelFunc // 取消运行（Close/Cancel 调用；完成后由运行 goroutine 自行释放）
-	result agent.Result
-	err    error
+	request   Request
+	completed uint64
+	done      chan struct{}      // 运行结束（含结果写入）后关闭
+	cancel    context.CancelFunc // 取消运行（Close/Cancel 调用；完成后由运行 goroutine 自行释放）
+	result    agent.Result
+	err       error
 }
 
 // Client 应用级共享运行入口：装配一次，全部会话复用。
 // 可并发使用；全部跨运行状态都在注入的 Runtime 里。
 type Client struct {
-	model agent.ModelFunc
-	tools []tool.Tool
-	rt    *runtime.Runtime
+	resolver      func(context.Context, string) (Request, error)
+	maxCompleted  int
+	completionSeq uint64
+	model         agent.ModelFunc
+	tools         []tool.Tool
+	rt            *runtime.Runtime
 
 	mu     sync.Mutex
 	runs   map[string]*runState
@@ -146,7 +160,15 @@ func NewClient(opts Options) (*Client, error) {
 			Checkpoints: memory.NewCheckpointStore(),
 		})
 	}
+	limit := opts.MaxCompletedRuns
+	if limit == 0 {
+		limit = 128
+	}
+	if limit < 0 {
+		limit = 0
+	}
 	return &Client{
+		resolver: opts.ResumeResolver, maxCompleted: limit,
 		model: opts.Model,
 		tools: append([]tool.Tool(nil), opts.Tools...),
 		rt:    rt,
@@ -157,7 +179,7 @@ func NewClient(opts Options) (*Client, error) {
 // Runtime 暴露底层运行时（诊断、直接调用其高级能力时使用）。
 func (c *Client) Runtime() *runtime.Runtime { return c.rt }
 
-// Start 发起一次运行并立即返回句柄；执行在 Client 管理的后台 goroutine 中。
+// Start 发起一次运行并在登记就绪后返回句柄；执行在 Client 管理的后台 goroutine 中。
 // ctx 只控制提交过程。错误在 Wait 中呈现（持久化失败、模型失败等——
 // 见 runtime 的 fail-closed 语义）。
 func (c *Client) Start(ctx context.Context, req Request) (*Run, error) {
@@ -168,58 +190,194 @@ func (c *Client) Start(ctx context.Context, req Request) (*Run, error) {
 	if req.Model == nil && c.model == nil {
 		return nil, ErrNoModel
 	}
-	_ = ctx // 提交过程当前无阻塞操作；保留参数以稳定签名（未来校验/装配可阻塞）
-	return c.launch(ctx, req, "", msgs)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return c.launch(ctx, req, req.RunID, msgs)
 }
 
-// Resume 从检查点恢复一次受管运行（工具用 Client 默认工具集）。
+// Resume 从检查点恢复一次受管运行，沿用原请求配置。
 // 典型场景：进程重启后 Recover，再对用户确认过的 runID 逐个恢复。
 func (c *Client) Resume(ctx context.Context, runID string) (*Run, error) {
-	return c.launch(ctx, Request{}, runID, nil)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, ErrClientClosed
+	}
+	st := c.runs[runID]
+	if st != nil {
+		select {
+		case <-st.done:
+		default:
+			c.mu.Unlock()
+			return nil, runtime.ErrRunActive
+		}
+	}
+	c.mu.Unlock()
+	if st != nil {
+		return c.ResumeWith(ctx, runID, st.request)
+	}
+	if c.resolver == nil {
+		return nil, ErrResumeConfigRequired
+	}
+	req, err := c.resolver(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	return c.ResumeWith(ctx, runID, req)
 }
 
-// launch 组装配置、登记运行状态并启动后台执行。
-// runID 为空表示新运行（内部生成）；非空表示按该 ID 恢复（Resume）。
-func (c *Client) launch(ctx context.Context, req Request, runID string,
-	msgs []message.Message) (*Run, error) {
+// ResumeWith restores execution using application-verified original configuration.
+// Input/Messages/Options come from the checkpoint. Model is required and Tools
+// is the complete authorized set (nil means no tools, not Client defaults).
+func (c *Client) ResumeWith(ctx context.Context, runID string, req Request) (*Run, error) {
+	if runID == "" {
+		return nil, runtime.ErrRunNotFound
+	}
+	if req.Model == nil {
+		return nil, ErrNoModel
+	}
+	if req.Tools == nil {
+		req.Tools = []tool.Tool{}
+	}
+	return c.launch(ctx, req, runID, nil)
+}
 
+func (c *Client) launch(ctx context.Context, req Request, runID string, msgs []message.Message) (*Run, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	resume := msgs == nil
+	if req.Model == nil {
+		req.Model = c.model
+	}
+	if req.Tools == nil {
+		req.Tools = c.tools
+	}
+	req.Tools = append([]tool.Tool{}, req.Tools...)
+	req.Policies = maps.Clone(req.Policies)
+	saved := req
+	saved.Input, saved.Messages, saved.Options = "", nil, nil
 	bgCtx, cancel := context.WithCancel(context.Background())
-	st := &runState{done: make(chan struct{}), cancel: cancel}
-
+	st := &runState{done: make(chan struct{}), cancel: cancel, request: saved}
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		cancel()
 		return nil, ErrClientClosed
 	}
-	if runID == "" {
+	if previous := c.runs[runID]; previous != nil {
+		select {
+		case <-previous.done:
+		default:
+			c.mu.Unlock()
+			cancel()
+			return nil, runtime.ErrRunActive
+		}
+	}
+	if !resume && runID == "" {
 		runID = c.rt.BeginRun()
 	}
 	c.runs[runID] = st
 	c.mu.Unlock()
-
 	cfg := c.config(req, runID)
-	resume := req.Input == "" && len(req.Messages) == 0
+	ready := make(chan struct{})
 	go func() {
 		defer func() {
-			cancel() // 释放 bgCtx 资源（对已结束运行无副作用）
+			cancel()
+			c.mu.Lock()
+			c.completionSeq++
+			st.completed = c.completionSeq
 			close(st.done)
+			c.pruneLocked()
+			c.mu.Unlock()
 		}()
-		model := c.model
-		if req.Model != nil {
-			model = req.Model
-		}
-		var res agent.Result
-		var rerr error
 		if resume {
-			res, rerr = c.rt.Resume(bgCtx, runID, cfg, model, nil)
+			st.result, st.err = c.rt.ResumeReady(bgCtx, runID, cfg, req.Model, nil, func() { close(ready) })
 		} else {
-			res, rerr = c.rt.Run(bgCtx, msgs, req.Options, cfg, model, nil)
+			st.result, st.err = c.rt.RunReady(bgCtx, msgs, req.Options, cfg, req.Model, nil, func() { close(ready) })
 		}
-		// happens-before：先写结果再关 done，Wait 侧读到关闭即见结果
-		st.result, st.err = res, rerr
 	}()
-	return &Run{id: runID, c: c}, nil
+	handle := &Run{id: runID, c: c, state: st}
+	select {
+	case <-ready:
+		return handle, nil
+	case <-st.done:
+		select {
+		case <-ready:
+			return handle, nil
+		default:
+			return nil, st.err
+		}
+	case <-ctx.Done():
+		cancel()
+		<-st.done
+		return nil, ctx.Err()
+	}
+}
+
+// Forget releases a completed result/configuration while retaining persistent history.
+// Existing Run handles still return results for their own execution attempt.
+func (c *Client) Forget(runID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.runs[runID]
+	if st == nil {
+		return false
+	}
+	select {
+	case <-st.done:
+		delete(c.runs, runID)
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) pruneLocked() {
+	for {
+		count := 0
+		var oldest string
+		var seq uint64
+		for id, st := range c.runs {
+			if st.completed == 0 {
+				continue
+			}
+			count++
+			if oldest == "" || st.completed < seq {
+				oldest, seq = id, st.completed
+			}
+		}
+		if count <= c.maxCompleted {
+			return
+		}
+		delete(c.runs, oldest)
+	}
+}
+
+func waitState(ctx context.Context, st *runState) (agent.Result, error) {
+	select {
+	case <-st.done:
+		return st.result, st.err
+	case <-ctx.Done():
+		return agent.Result{}, ctx.Err()
+	}
+}
+
+func cancelState(st *runState) bool {
+	if st == nil {
+		return false
+	}
+	select {
+	case <-st.done:
+		return false
+	default:
+		st.cancel()
+		return true
+	}
 }
 
 // config 组装 agent.Config。Approve 不设置——runtime 自动绑定内部
@@ -266,8 +424,7 @@ func (c *Client) Cancel(runID string) bool {
 	if !ok {
 		return false
 	}
-	st.cancel()
-	return true
+	return cancelState(st)
 }
 
 // Approve 提交一次审批决策（解除运行中阻塞的审批等待）。

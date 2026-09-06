@@ -1,18 +1,16 @@
 # 使用手册：runtime — 持久化运行与断点续跑
 
-`runtime` 包装 `agent.Runner`，把一次运行变成**可登记、可回放、可恢复、可订阅**的过程：状态登记、事件落库、检查点、审批持久化、进程恢复。普通对话用裸 `agent.Run` 就够；长任务、需要跨重启恢复、需要前端断线重连时才需要它。
+`runtime` 包装 `agent.Runner`，把一次运行变成**可登记、可回放、可恢复、可订阅**的过程：状态登记、事件落库、检查点、审批持久化、进程恢复。一般接入推荐 [Client](client.md)，本页用于直接操作底层 Runtime。
 
-> **稳定性声明**：恢复语义为**实验性**——作为内部验证目标持续打磨，暂不构成公开兼容承诺。已验证场景见 `runtime` 包测试（崩溃窗口结果复用、审批中断续跑、进程重启续跑、落库失败中止）。
+> **稳定性声明**：恢复语义为**实验性**——作为内部验证目标持续打磨，不作恢复可靠性保证。已验证场景见 `runtime` 包测试（崩溃窗口结果复用、审批中断续跑、进程重启续跑、落库失败中止）。
 
 ## 状态机
 
-```
-pending ──► running ──► succeeded
-    │          │ ▲
-    │          ▼ │（审批决议后回到 running）
-    │    waiting_approval
-    ▼          ▼
-  failed ◄── canceled
+```text
+pending -> running -> succeeded
+              |
+              +-> waiting_approval -> running
+              +-> failed / canceled
 ```
 
 | 状态 | 含义 |
@@ -32,7 +30,12 @@ rt := runtime.New(runtime.Options{
 	Checkpoints: memory.NewCheckpointStore(),
 })
 
-// SQLite 实现：一行装配，跨进程恢复（WAL 模式，同文件可多 Store 共享）
+```
+
+或选择 SQLite，以下为替代配置片段：
+
+```go
+// SQLite 保存记录；恢复行为为实验性。
 db, opts, err := sqlite.OpenRuntime("runs.db")
 if err != nil { panic(err) }
 defer db.Close()
@@ -48,17 +51,18 @@ result, err := rt.Run(ctx, msgs, nil,
 ## Run 期间自动发生什么
 
 - **状态登记**：`pending → running → 终态`，审批等待时置 `waiting_approval` 并落库待审批调用详情。
-- **事件落库**：agent 的每个事件都写入 EventStore 并分配单调递增 `Seq`——emit 收到的与落库内容一致（同 Seq 同内容）。
-- **三级检查点**：①运行开始存初始检查点（保证首个审批等待前就有可恢复点）；②每条工具回执写入轨迹后存**调用级**检查点；③每步收尾存步级检查点。
+- **事件落库**：配置 EventStore 时，agent 事件尝试写入该 Store 并分配单调递增 `Seq`——emit 收到的与落库内容一致（同 Seq 同内容）。
+- **三级检查点**：①运行开始存初始检查点（用于首个审批前中断恢复）；②每条工具回执写入轨迹后存**调用级**检查点；③每步收尾存步级检查点。
 - **审批包装**：`Config.Approve` 为 nil 时自动绑定内置 Broker，配合 `rt.Approve` 实现跨 HTTP 请求审批。
 
 ## 终态事件
 
-运行结束（无论成败）都会写入一条终点事件并广播：
+正常存储条件下写入终态事件；存储失败时以返回错误为准，不能假设终态已持久化：
 
 - `run_done`：成功（含用量统计）；
 - `run_error`：失败（`Error` 字段有原因；取消为 "canceled"）；
-- `run_resumed`：Resume 时发出，标记一次续跑。
+
+另有 run_resumed：标记续跑，不是终态。
 
 ## Resume：断点续跑
 
@@ -96,7 +100,7 @@ func (t myTool) RetryPolicy() tool.RetryPolicy { return tool.RetryPolicyNoRetry 
 
 ### fail-closed：落库失败即中止
 
-事件、检查点、状态登记任一持久化失败都会**中止运行并把错误传给调用方**——持久化是恢复语义的前提，宁可失败也不静默丢记录后假装可以恢复。对应地：`Run` 返回成功就代表事件与状态都已落库。
+事件、检查点、状态登记任一持久化失败都会**中止运行并把错误传给调用方**——持久化是恢复语义的前提，宁可失败也不静默丢记录后假装可以恢复。这些行为以已配置 Store 为前提；nil Store 不持久化，内存 Store 不跨进程。存储故障时失败状态本身也可能无法保存。
 
 ## 事件的三种读法
 
@@ -108,11 +112,11 @@ events, err := rt.Replay(ctx, runID)
 ch, cancel := rt.Subscribe(runID)
 defer cancel()
 
-// 3. Stream：回放 + 实时 + 缺口补读 —— 交付与 Replay 一致的完整序列
+// 3. Stream：回放 + 实时 + 缺口补读 —— 面向当前尝试补读并跟随事件
 err = rt.Stream(ctx, runID, afterSeq, func(e agent.Event) { /* SSE 转发 */ })
 ```
 
-`Stream` 是前端断线重连的标准答案：`afterSeq` 传客户端最后收到的 Seq（0 表示从头），先补齐历史，再追实时；实时通道丢事件时检测 Seq 缺口自动从 Store 补读；运行已结束时做最终补齐并兜底合成终态事件。**慢消费者不丢数据。**
+`Stream` 是前端断线重连的标准答案：`afterSeq` 传客户端最后收到的 Seq（0 表示从头），先补齐历史，再追实时；实时通道丢事件时检测 Seq 缺口自动从 Store 补读；运行已结束时做最终补齐并兜底合成终态事件。补读依赖可用 EventStore。Stream 会过滤旧尝试终态，也可能合成终态提示；原始审计用 Replay，不保证两者逐条相同。
 
 ## 审批跨 HTTP 请求
 
@@ -149,4 +153,4 @@ err := rt.Approve(runID, callID, true) // 解除阻塞，运行继续
 | `EventStore` | `Append`（append-only）/ `List`（按发生顺序） |
 | `CheckpointStore` | `Save`（同 RunID 覆盖）/ `Load`（无检查点返回 `ErrNoCheckpoint`） |
 
-内存实现见 `runtime/memory`；SQLite 实现（含 `OpenRuntime` 开箱预设）见 `storage/sqlite`。自定义实现的要求见扩展手册（编写中）。
+内存实现见 `runtime/memory`；SQLite 实现（含 `OpenRuntime` 开箱预设）见 `storage/sqlite`。见 [自定义存储](../扩展手册/自定义存储.md)。

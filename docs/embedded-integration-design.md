@@ -1,8 +1,12 @@
 # dlz-goai 嵌入式集成架构设计
 
-> 状态：设计草案，尚未实施。
+> 状态：目标架构草案，已部分实施。
 >
-> 本文定义 `dlz-goai` 下一阶段的目标架构和公共 API。当前代码继续按现有 API 工作；本文不表示相关接口已经可用。
+> v0.1.0 已提供最小 Client：NewClient(Options)、Start、Wait、Approve、Resume、GetRun、Stream 与 Close。当前接口见 [Client 手册](使用手册/client.md)。
+>
+> 下文 DefaultConfig、链式注册、Session、Preset 全体系和统一 Error 仍为规划，示例不能直接作为当前接入代码。
+>
+> 本文定义 `dlz-goai` 下一阶段的目标架构和公共 API。当前代码继续按现有 API 工作；除上文最小门面外，本文不表示规划接口已经可用。
 
 ## 1. 背景
 

@@ -1,8 +1,8 @@
 # 扩展手册：自定义 Provider
 
-内置的 `provider/openai` 与 `provider/ollama` 覆盖不了的服务（自建网关、私有 SDK、非 HTTP 协议），有两条接入路径。选哪条取决于目标服务的协议形态。
+内置的 `provider/openai` 与 `provider/ollama` 覆盖不了的服务（自建网关、私有 SDK、非 HTTP 协议），可实现公开的 llm.Provider 接口。
 
-## 路径一：实现 llm.Provider（推荐起点）
+## 实现公开 llm.Provider 接口
 
 三个方法，直接实现：
 
@@ -21,12 +21,12 @@ type Provider interface {
 - **流内错误**用 `delta.Error` 传递（agent 会把它并入轨迹保留已流出内容）；连接失败直接返回 error；
 - `model` 由调用方显式传入，为空时返回明确错误——不要替调用方猜模型；
 - `opts` 可能为 nil（零值语义 = 全部交给服务端默认）；
-- `Ping` 的标准实现是发一个最小请求，收到任何内容增量即视为可用。
+- Ping 仅检查连通性，不代表验证了模型工具调用能力。
 
-最小骨架（gRPC 服务的例子）：
+gRPC 适配思路片段，ChatClient、协议转换和另外两个方法由应用实现：
 
 ```go
-type grpcProvider struct{ endpoint string }
+type grpcProvider struct{ client ChatClient } // 应用自己的客户端接口
 
 func (p *grpcProvider) ChatStream(ctx context.Context, model string,
 	msgs []message.Message, opts *message.Options, cb func(message.Delta)) error {
@@ -59,32 +59,9 @@ callModel := func(ctx context.Context, msgs []message.Message, opts *message.Opt
 }
 ```
 
-**要求接受 `agent.Config` 的 `ModelFunc` 的地方都能用**——这也是测试桩与生产实现可以无缝互换的原因。
+**可传入 Client.Options.Model 或 Agent.Run 的 model 参数**——这也是测试桩与生产实现可以无缝互换的原因。
 
-## 路径二：实现 wire.Codec（OpenAI 风格 SSE）
-
-目标服务是 HTTP + SSE、只是细节与 OpenAI 不同（端点路径、载荷字段、参数名）时，不必重写 HTTP/SSE 流程——实现六个差异点，HTTP、重试、流解析、端点回退全部复用：
-
-```go
-type Codec interface {
-	// 候选聊天端点，按优先级依次尝试（openai 实现用它做 /v1 回退）
-	ChatURLs(baseURL string) []string
-	// 模型清单端点
-	ModelsURL(baseURL string) string
-	// 统一消息 → 厂商载荷（含图片、工具字段）
-	EncodeMessages(messages []message.Message) []map[string]any
-	// 厂商特有推理参数写入请求体（温度、num_ctx 等）
-	ApplyOptions(body map[string]any, opts *message.Options)
-	// 解析模型清单响应体
-	DecodeModels(r io.Reader) ([]string, error)
-	// 是否面向本地 Ollama（影响工具字段格式与 tool_choice）
-	Ollama() bool
-}
-
-provider := &openai.Provider{Client: wire.NewClient(baseURL, apiKey, myCodec{})}
-```
-
-**警告**：`internal/wire` 是内部包，不承诺兼容。升级版本时 Codec 实现可能需要适配——把你的 Codec 实现放在自己的仓库里并锁版本，或在 dlz-goai 仓库内贡献为官方 provider。
+内部 wire.Codec 仅供库内开发，外部项目不能导入 internal/wire，锁版本也不能解除限制。见 [贡献指南](../贡献指南.md)。
 
 ## 验证清单
 

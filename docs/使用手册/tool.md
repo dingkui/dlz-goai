@@ -48,7 +48,7 @@ t := tool.Typed("search", "搜索知识库", true,
 	})
 ```
 
-JSON Schema 从结构体反射生成；参数绑定失败时返回 **IsError 结果**（含 schema 原文）回传模型自我纠正，而不是 error 终止本轮。
+JSON Schema 从结构体反射生成；参数绑定失败时返回 **IsError 结果**（含 schema 原文）回传模型自我纠正，；工具返回的 Go error 当前也会转换为模型可见回执。
 
 ### 3. 实现接口 — 远程/MCP 工具
 
@@ -59,9 +59,9 @@ JSON Schema 从结构体反射生成；参数绑定失败时返回 **IsError 结
 | 通道 | 写法 | agent 行为 |
 |---|---|---|
 | 业务失败 | `return tool.Error("记录不存在"), nil` | 原因写进 tool 消息回传模型，给它自我纠正的机会 |
-| 执行失败 | `return tool.Result{}, errors.New("db down")` | 终止当前步骤，错误上抛 |
+| 执行失败 | `return tool.Result{}, errors.New("db down")` | 转换为工具错误回执交回模型，循环可继续 |
 
-判定标准：**模型还能为这个失败做什么吗？** 能 → 业务失败；不能 → error。
+两种返回形式区分错误来源，但都不自动终止 Agent；详见 [错误处理](../指南/错误处理.md)。
 
 `Result` 完整字段：`Content`（回传模型的文本）、`IsError`、`Citations`（引用，agent 自动汇总去重）、`Metadata`（调用方自用，不进模型载荷）。
 

@@ -69,11 +69,17 @@ func (rt *Runtime) BeginRun() string { return rt.broker.Begin() }
 // 宁可让运行失败，也不静默丢失记录后假装可以恢复。
 func (rt *Runtime) Run(ctx context.Context, initial []message.Message, opts *message.Options,
 	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter) (agent.Result, error) {
-	return rt.run(ctx, initial, opts, cfg, model, emit, false)
+	return rt.RunReady(ctx, initial, opts, cfg, model, emit, nil)
+}
+
+// RunReady calls ready after registration and the initial checkpoint are durable, before model execution.
+func (rt *Runtime) RunReady(ctx context.Context, initial []message.Message, opts *message.Options,
+	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter, ready func()) (agent.Result, error) {
+	return rt.run(ctx, initial, opts, cfg, model, emit, false, ready)
 }
 
 func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *message.Options,
-	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter, resume bool) (agent.Result, error) {
+	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter, resume bool, ready func()) (agent.Result, error) {
 
 	runID := cfg.RunID
 	if runID == "" {
@@ -241,17 +247,19 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 		cfg.Approve = rt.ApprovalHandler(runID)
 	}
 	innerApprove := cfg.Approve
-	cfg.Approve = agent.ApprovalFunc(func(ctx context.Context, req agent.ApprovalRequest) (bool, error) {
-		if err := rt.updateRecord(runID, func(r *RunRecord) {
-			r.Status = StatusWaitingApproval
-			r.PendingApproval = &PendingApproval{
-				CallID: req.CallID, ToolName: req.ToolName,
-				SourceName: req.SourceName, Arguments: req.Arguments,
+	cfg.Approve = agent.ReadyApprovalFunc(func(ctx context.Context, req agent.ApprovalRequest, ready func() error) (bool, error) {
+		decision, derr := agent.RequestApproval(ctx, innerApprove, req, func() error {
+			if err := rt.updateRecord(runID, func(r *RunRecord) {
+				r.Status = StatusWaitingApproval
+				r.PendingApproval = &PendingApproval{
+					CallID: req.CallID, ToolName: req.ToolName,
+					SourceName: req.SourceName, Arguments: req.Arguments,
+				}
+			}); err != nil {
+				return fmt.Errorf("runtime: failed to persist approval wait: %w", err)
 			}
-		}); err != nil {
-			return false, fmt.Errorf("runtime: failed to persist approval wait: %w", err)
-		}
-		decision, derr := innerApprove.Request(ctx, req)
+			return ready()
+		})
 		if uerr := rt.updateRecord(runID, func(r *RunRecord) {
 			r.Status = StatusRunning
 			r.PendingApproval = nil
@@ -261,6 +269,9 @@ func (rt *Runtime) run(ctx context.Context, initial []message.Message, opts *mes
 		return decision, derr
 	})
 
+	if ready != nil {
+		ready()
+	}
 	result, err := rt.runner.Run(runCtx, initial, opts, cfg, model, wrapped)
 
 	// 终态判定：取消 → canceled；其余错误 → failed；
@@ -327,6 +338,12 @@ func (rt *Runtime) ApprovalHandler(runID string) agent.ApprovalHandler {
 func (rt *Runtime) Resume(ctx context.Context, runID string,
 	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter) (agent.Result, error) {
 
+	return rt.ResumeReady(ctx, runID, cfg, model, emit, nil)
+}
+
+// ResumeReady calls ready once the resumed run is registered, before model execution.
+func (rt *Runtime) ResumeReady(ctx context.Context, runID string,
+	cfg agent.Config, model agent.ModelFunc, emit agent.Emitter, ready func()) (agent.Result, error) {
 	if rt.checkpoints == nil {
 		return agent.Result{}, errors.New("runtime: no checkpoint store configured, cannot resume")
 	}
@@ -367,7 +384,7 @@ func (rt *Runtime) Resume(ctx context.Context, runID string,
 			cfg.Tools = tools
 		}
 	}
-	return rt.run(ctx, messages, cp.Options, cfg, model, emit, true)
+	return rt.run(ctx, messages, cp.Options, cfg, model, emit, true, ready)
 }
 
 // Approve 提交审批决策（等待中的运行由审批 Handler 解除阻塞）。

@@ -25,7 +25,7 @@ tools := manager.ToolsOf([]string{"files"}) // []tool.Tool——agent 无感知 
 result, _ := agent.New().Run(ctx, msgs, nil, agent.Config{Tools: tools}, callModel, nil)
 ```
 
-完整示例：[`examples/mcp`](../examples/mcp/main.go)。
+完整示例：[`examples/mcp`](../../examples/mcp/main.go)。
 
 ## 服务配置（Server）
 

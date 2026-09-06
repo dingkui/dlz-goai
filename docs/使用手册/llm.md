@@ -121,4 +121,4 @@ models, err := provider.ListModels(ctx) // 校验模型名是否可用
 
 ## 自定义实现
 
-实现三个方法即可接入任何协议（自建网关、私有 SDK）；只需要部分能力时返回明确错误。详见扩展手册《自定义 Provider》（编写中）。`internal/wire` 提供 Codec 差异点抽象，实现新厂商时可直接复用 HTTP/SSE 流程，但它是内部包、不承诺兼容。
+实现公开 llm.Provider 接口，详见 [自定义 Provider](../扩展手册/自定义Provider.md)。外部项目不能导入 internal/wire；该包仅供库内开发。

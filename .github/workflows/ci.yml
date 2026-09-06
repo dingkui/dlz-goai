@@ -26,3 +26,7 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test ./... -race -count=1
+
+      - name: Documentation checks
+        shell: pwsh
+        run: ./scripts/check-docs.ps1
